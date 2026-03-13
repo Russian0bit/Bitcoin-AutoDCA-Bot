@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Wallet files (CRITICAL - never commit)
+wallet.json
+keystores/
+
+# Python cache
+*.pyc
+
+# Local config copies
+config.json
+config.local.json
+
+# Backup files
+*.bak
+*.backup
+
+# macOS
+.AppleDouble
+.LSOverride
+
+# Testing / temp
+tmp/
+temp/
+
+# Coverage
+.coverage
+htmlcov/
