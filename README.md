@@ -1,24 +1,45 @@
-# AutoDCA Bot
+# BTC_AutoDCA_Bot
 
-Telegram бот для автоматических покупок Bitcoin (BTC) через сервис обмена FixedFloat с использованием стратегии Dollar Cost Averaging (DCA).
+Telegram-бот для DCA-покупки Bitcoin (BTC) через FixedFloat.
 
-## 🚀 Возможности
+Бот поддерживает два режима:
+- **Manual mode** — пользователь отправляет USDT вручную.
+- **Auto Send mode** — бот автоматически отправляет USDT с EVM-кошелька.
 
-- **Автоматические покупки BTC** по расписанию (DCA стратегия)
-- **Поддержка нескольких сетей**: USDT-ARB, USDT-BSC, USDT-MATIC
-- **До 3 планов на каждую сеть** с разными параметрами
-- **Ручное выполнение** ордеров в любой момент
-- **Отслеживание активных ордеров** на FixedFloat
-- **Защита от дубликатов** - нельзя создать несколько активных ордеров для одного плана
-- **Мягкое удаление** планов с сохранением информации об активных ордерах
+Приватный ключ импортируется один раз, шифруется и сохраняется как `keystore` файл.
+Пароль хранится в OS keyring.
+
+## 🚀 Features
+
+- DCA-покупка BTC по расписанию.
+- Два режима работы: Manual mode и Auto Send mode.
+- Поддержка сетей: Arbitrum, BSC, Polygon.
+- Импорт `wallet.json` и безопасное хранение ключа в `keystore`.
+- Хранение пароля в OS keyring.
+- Проверка `execution_window` для защиты от позднего исполнения.
+- Offline recovery при перезапуске.
+- Пропуск устаревших циклов (`execution_state = skipped`).
+- Защита от duplicate execution при конкурентных запусках.
+
+## 🔄 Режимы работы
+
+### Manual mode
+Бот создаёт ордер FixedFloat и показывает адрес депозита.  
+USDT отправляются вручную пользователем.
+
+### Auto Send mode
+Бот создаёт ордер FixedFloat и автоматически отправляет USDT с настроенного EVM-кошелька.
 
 ## 📋 Требования
 
 - Python 3.9+
 - Telegram Bot Token
-- FixedFloat API ключи (API Key и API Secret)
+- Telegram Admin ID
+- FixedFloat API Key и FixedFloat API Secret
 
-## 🔧 Установка
+## 🔧 Installation
+
+### 1) Установка проекта
 
 1. Клонируйте репозиторий:
 ```bash
@@ -29,9 +50,9 @@ cd autodca-bot
 2. Создайте виртуальное окружение:
 ```bash
 python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
+source venv/bin/activate  # macOS / Linux
 # или
-venv\Scripts\activate  # Windows
+venv\Scripts\activate     # Windows
 ```
 
 3. Установите зависимости:
@@ -39,115 +60,136 @@ venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 ```
 
-4. Создайте файл `.env` на основе `.env.example`:
-```bash
-cp .env.example .env
-```
+### 2) Первичная настройка
 
-5. Заполните `.env` файл:
-```
+Подготовьте 4 параметра:
+- **Telegram Bot Token** — через [@BotFather](https://t.me/BotFather), команда `/newbot`
+- **Telegram Admin ID** — через [@my_id_bot](https://t.me/my_id_bot)
+- **FixedFloat API Key**
+- **FixedFloat API Secret**  
+  Получить: [https://ff.io/user/apikey](https://ff.io/user/apikey)
+
+### 3) Настройка `.env`
+
+1. Откройте папку проекта.
+2. Найдите файл `.env.example`.
+3. Скопируйте его.
+4. Переименуйте копию в `.env`.
+5. Откройте `.env` в любом текстовом редакторе и заполните значения:
+
+```env
+# Telegram bot
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-FF_API_KEY=your_fixedfloat_api_key
-FF_API_SECRET=your_fixedfloat_api_secret
-DATABASE_PATH=./dca.db
+ADMIN_USER_ID=123456789
+
+# FixedFloat API
+FIXEDFLOAT_API_KEY=your_fixedfloat_api_key
+FIXEDFLOAT_API_SECRET=your_fixedfloat_api_secret
 ```
 
-## 🏃 Запуск
+### 4) Настройка кошелька
 
+Создайте файл `wallet.json` в корне проекта:
+
+```json
+{
+  "private_key": "0xYOUR_PRIVATE_KEY",
+  "password": "YOUR_PASSWORD"
+}
+```
+
+После этого в Telegram выполните:
+
+```text
+/setwallet
+```
+
+Что произойдёт:
+- бот зашифрует приватный ключ;
+- создаст `keystore`;
+- сохранит пароль в OS keyring.
+
+После успешного импорта `wallet.json` можно удалить.
+
+## ▶️ Запуск бота
+
+**Mac / Linux**
+```bash
+python3 bot.py
+```
+
+**Windows**
 ```bash
 python bot.py
 ```
 
-Бот автоматически:
-- Создаст базу данных при первом запуске
-- Обновит коды сетей из FixedFloat API
-- Запустит DCA Scheduler для автоматического выполнения планов
+После запуска бот:
+- создаёт базу данных (если ещё нет);
+- запускает scheduler;
+- начинает выполнять DCA-планы.
 
-## 📖 Команды бота
+## ⛽ Требования к газу
 
-### Настройка планов
-- `/start` - приветствие и список команд
-- `/setdca СЕТЬ СУММА ИНТЕРВАЛ BTC_АДРЕС` - создать DCA план
-- `/status` - посмотреть все активные планы
-- `/pause_N` - приостановить план (N - номер плана)
-- `/resume_N` - возобновить план
-- `/delete_N` - удалить план
+Для автоотправки USDT на кошельке должен быть газ:
+- **Arbitrum** → ETH
+- **BSC** → BNB
+- **Polygon** → MATIC
 
-### Ручные операции
-- `/execute_N` - выполнить обмен вручную для плана N
-- `/networks` - посмотреть доступные сети USDT
-- `/limits` - проверить лимиты обмена
+## 📖 Commands
 
-### Информация
-- `/help` - подробная справка
-- `/ping` - проверка работы бота
+- `/start` — приветствие и список команд
+- `/help` — подробная справка
+- `/setwallet` — импорт/настройка кошелька
+- `/walletstatus` — балансы кошелька
+- `/setdca СЕТЬ СУММА ИНТЕРВАЛ BTC_АДРЕС` — создать DCA-план
+- `/status` — статус планов
+- `/execute` или `/execute_N` — выполнить план вручную
+- `/pause` или `/pause_N` — приостановить план
+- `/resume` или `/resume_N` — возобновить план
+- `/delete` или `/delete_N` — удалить план
+- `/limits` — лимиты обмена
+- `/history` — история операций
+- `/networks` — доступные сети
 
-## 📝 Примеры использования
+## 📝 Пример DCA-плана
 
-### Создание плана
-```
+```text
 /setdca USDT-ARB 50 24 bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh
 ```
-- **USDT-ARB** - сеть (Arbitrum)
-- **50** - сумма в USD (10-500)
-- **24** - интервал в часах (12, 24, 168, 720)
-- **bc1q...** - Bitcoin адрес для получения
 
-### Интервалы
-- `12` - раз в 12 часов
-- `24` - раз в день
-- `168` - раз в неделю (7 дней)
-- `720` - раз в месяц (30 дней)
+- `USDT-ARB` — сеть (Arbitrum)
+- `50` — сумма в USD
+- `24` — интервал в часах (12, 24, 168, 720)
+- `bc1q...` — BTC-адрес для получения
 
-## 🏗️ Архитектура
+## 🏗️ Architecture
 
-### Основные компоненты
+Основные компоненты:
+1. **DCA Scheduler** — проверяет планы каждую минуту.
+2. **SQLite** — хранит планы, ордера, статусы и историю.
+3. **FixedFloat API** — создание и отслеживание ордеров USDT → BTC.
+4. **Telegram Bot (aiogram)** — команды и уведомления.
 
-1. **DCA Scheduler** (`dca_scheduler()`) - фоновая задача, проверяет планы каждую минуту и создаёт ордера на FixedFloat
-2. **База данных** (SQLite) - хранит планы, активные ордера, статусы
-3. **FixedFloat API** - интеграция для создания ордеров обмена USDT → BTC
-4. **Telegram Bot** (aiogram) - обработка команд пользователей
+Ключевые механики:
+- execution window (защита от позднего исполнения);
+- offline recovery после рестарта;
+- skipped/expired циклы;
+- duplicate execution protection.
 
-### Структура базы данных
+## 🔒 Security
 
-Таблица `dca_plans`:
-- `id` - уникальный ID плана
-- `user_id` - Telegram ID пользователя
-- `from_asset` - сеть USDT (USDT-ARB, USDT-BSC, USDT-MATIC)
-- `amount` - сумма покупки в USD
-- `interval_hours` - интервал между покупками
-- `btc_address` - адрес BTC для получения
-- `next_run` - timestamp следующего запуска
-- `active` - активен ли план (1/0)
-- `active_order_id` - ID активного ордера на FixedFloat
-- `active_order_address` - адрес для депозита
-- `active_order_amount` - сумма для отправки
-- `active_order_expires` - timestamp истечения ордера
-- `deleted` - флаг мягкого удаления (0/1)
+- `private_key` импортируется из `wallet.json` один раз.
+- Ключ шифруется и хранится в `keystore`.
+- Пароль хранится в OS keyring.
+- `wallet.json` используется только для импорта и затем удаляется.
+- API-ключи хранятся в `.env` (не коммитятся в Git).
 
-## 🔒 Безопасность
-
-- Бот **не хранит** приватные ключи
-- Токены отправляются пользователем **вручную** на адрес от FixedFloat
-- API ключи хранятся в `.env` файле (не коммитятся в Git)
-- База данных и логи исключены из репозитория (см. `.gitignore`)
-
-## 🐛 Обработка ошибок
-
-- Автоматическая очистка истёкших ордеров
-- Защита от создания дубликатов ордеров
-- Проверка совпадения BTC адреса при наследовании ордеров
-- Логирование всех операций в `logs/bot.log`
+⚠️ Никогда не коммитьте `wallet.json` в Git.
 
 ## 📄 Лицензия
 
 MIT License
 
-## 🤝 Вклад
-
-Приветствуются Pull Request'ы! Для больших изменений сначала откройте Issue для обсуждения.
-
 ## ⚠️ Отказ от ответственности
 
-Этот бот предоставляется "как есть". Используйте на свой риск. Автор не несёт ответственности за потерю средств.
-
+Проект предоставляется «как есть». Используйте на свой риск.
