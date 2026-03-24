@@ -258,7 +258,6 @@ def build_auto_send_failed_notification(
     )
 
 
-<<<<<<< HEAD
 def format_scheduled_time(ts: int) -> str:
     """Format Unix timestamp for user-facing notifications."""
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(int(ts)))
@@ -428,8 +427,6 @@ async def mark_order_expired_before_send(
     await bot.send_message(user_id, notification)
 
 
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
 async def claim_plan_execution(plan_id: int, user_id: Optional[int] = None) -> bool:
     """Atomically claim plan execution to avoid duplicate order creation."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -466,7 +463,6 @@ async def release_plan_claim(plan_id: int) -> None:
         await db.commit()
 
 
-<<<<<<< HEAD
 async def claim_auto_send_execution(plan_id: int, order_id: str) -> bool:
     """
     Atomically claim right to run auto_send_usdt for a plan/order pair.
@@ -521,8 +517,6 @@ async def can_resume_auto_send(plan_id: int, order_id: str) -> bool:
         return True
 
 
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
 async def get_transfer_tx_status(network_key: str, tx_hash: str) -> str:
     """Return one of: confirmed, failed, pending."""
     if not tx_hash:
@@ -646,19 +640,15 @@ async def resume_transfer_after_approve(
     deposit_address: str,
     required_amount: float,
     existing_approve_tx: Optional[str],
-<<<<<<< HEAD
     plan_id: Optional[int] = None,
     order_expires: Optional[int] = None,
     scheduled_time: Optional[int] = None,
     interval_hours: Optional[int] = None,
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
 ) -> tuple[str, Optional[str], Optional[str], str]:
     """
     Continue flow after approve confirmation by attempting transfer step immediately.
     Returns: (state, approve_tx_hash, transfer_tx_hash, error_message)
     """
-<<<<<<< HEAD
     if is_order_expired(order_expires):
         if plan_id is not None:
             await mark_order_expired_before_send(
@@ -676,8 +666,6 @@ async def resume_transfer_after_approve(
         if not await can_resume_auto_send(plan_id, order_id):
             return ("blocked", existing_approve_tx, None, "DUPLICATE_EXECUTION_PREVENTED")
 
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
     wallet_password = _wallet_passwords.get(user_id)
     if not wallet_password:
         return ("failed", existing_approve_tx, None, "Wallet password not available for transfer after approve")
@@ -736,28 +724,19 @@ async def recovery_scan_pending_transactions() -> None:
                     await db.commit()
 
                     btc_address = ""
-<<<<<<< HEAD
                     active_order_expires = None
                     plan_next_run = None
                     plan_interval_hours = None
                     if plan_id:
                         async with db.execute(
                             "SELECT btc_address, active_order_expires, next_run, interval_hours FROM dca_plans WHERE id = ?",
-=======
-                    if plan_id:
-                        async with db.execute(
-                            "SELECT btc_address FROM dca_plans WHERE id = ?",
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                             (plan_id,)
                         ) as bcur:
                             b_row = await bcur.fetchone()
                         btc_address = (b_row[0] if b_row else "") or ""
-<<<<<<< HEAD
                         active_order_expires = b_row[1] if b_row else None
                         plan_next_run = b_row[2] if b_row else None
                         plan_interval_hours = b_row[3] if b_row else None
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
 
                     resume_state, resume_approve_tx, resume_transfer_tx, resume_error = await resume_transfer_after_approve(
                         network_key=network_key,
@@ -767,13 +746,10 @@ async def recovery_scan_pending_transactions() -> None:
                         deposit_address=tx_deposit_address or "",
                         required_amount=float(tx_amount or 0.0),
                         existing_approve_tx=approve_tx,
-<<<<<<< HEAD
                         plan_id=plan_id,
                         order_expires=active_order_expires,
                         scheduled_time=plan_next_run,
                         interval_hours=plan_interval_hours,
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                     )
 
                     if resume_state == "confirmed":
@@ -828,7 +804,6 @@ async def recovery_scan_pending_transactions() -> None:
             await db.commit()
 
 
-<<<<<<< HEAD
 async def recover_stale_plan_claims() -> None:
     """
     Clear stale 'claiming' states left after unexpected restart/crash.
@@ -981,8 +956,6 @@ async def notify_offline_startup_status() -> None:
     save_last_seen_execution_time(now_ts)
 
 
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
 def ff_sign(data_str: str) -> str:
     """
     Создание HMAC-SHA256 подписи для запроса к FixedFloat API.
@@ -1436,23 +1409,13 @@ async def init_db():
 async def dca_scheduler():
     """
     Фоновая задача для автоматического выполнения DCA планов.
-<<<<<<< HEAD
     Проверяет планы при старте и далее каждую минуту.
     Пропущенные циклы за пределами execution window помечаются как skipped и не исполняются.
-=======
-    Проверяет каждую минуту, есть ли планы готовые к выполнению (next_run <= now).
-    Если план готов - создаёт ордер на FixedFloat и обновляет next_run.
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
     """
     logger.info("DCA Scheduler запущен")
     
     while True:
         try:
-<<<<<<< HEAD
-=======
-            await asyncio.sleep(60)  # проверка каждую минуту
-            
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
             now = int(time.time())
             
             async with aiosqlite.connect(DB_PATH) as db:
@@ -1468,7 +1431,6 @@ async def dca_scheduler():
                 for plan in plans:
                     plan_id, user_id, from_asset, amount, interval_hours, btc_address, next_run = plan
                     plan_claimed = False
-<<<<<<< HEAD
                     try:
                         scheduled_time_for_cycle = int(next_run) if next_run is not None else now
                     except (TypeError, ValueError):
@@ -1482,8 +1444,6 @@ async def dca_scheduler():
                         elapsed_seconds = now - scheduled_time_for_cycle
                         if elapsed_seconds >= interval_seconds:
                             scheduled_time_for_cycle += (elapsed_seconds // interval_seconds) * interval_seconds
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                     
                     try:
                         async with db.execute(
@@ -1582,13 +1542,10 @@ async def dca_scheduler():
                                             deposit_address=existing_deposit_address or "",
                                             required_amount=float(existing_amount or amount),
                                             existing_approve_tx=existing_approve_tx,
-<<<<<<< HEAD
                                             plan_id=plan_id,
                                             order_expires=existing_order_expires,
                                             scheduled_time=scheduled_time_for_cycle,
                                             interval_hours=interval_hours,
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                                         )
                                         if resume_state == "confirmed":
                                             await db.execute(
@@ -1647,13 +1604,10 @@ async def dca_scheduler():
                                                     deposit_address=existing_deposit_address or "",
                                                     required_amount=float(existing_amount or amount),
                                                     existing_approve_tx=existing_approve_tx,
-<<<<<<< HEAD
                                                     plan_id=plan_id,
                                                     order_expires=existing_order_expires,
                                                     scheduled_time=scheduled_time_for_cycle,
                                                     interval_hours=interval_hours,
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                                                 )
                                                 if resume_state == "confirmed":
                                                     await db.execute(
@@ -1758,7 +1712,6 @@ async def dca_scheduler():
                                         continue
                                     if fallback_result == "completed":
                                         continue
-<<<<<<< HEAD
                         if next_run is not None and now > scheduled_time_for_cycle:
                             overdue_seconds = now - scheduled_time_for_cycle
                             if overdue_seconds > DCA_EXECUTION_WINDOW_SECONDS:
@@ -1770,9 +1723,6 @@ async def dca_scheduler():
                                 )
                                 continue
 
-=======
-                        
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                         logger.info(f"Выполнение DCA для plan_id={plan_id}, user_id={user_id}: {amount} {from_asset}")
                         
                         # Проверяем лимиты перед созданием ордера
@@ -1892,7 +1842,6 @@ async def dca_scheduler():
                                 f"⏳ Auto-sending USDT..."
                             )
                             
-<<<<<<< HEAD
                             if not await claim_auto_send_execution(plan_id, order_id):
                                 continue
 
@@ -1906,8 +1855,6 @@ async def dca_scheduler():
                                 )
                                 continue
 
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                             # Автоматическая отправка USDT
                             try:
                                 success, approve_tx, transfer_tx, error_msg = await auto_send_usdt(
@@ -1955,7 +1902,6 @@ async def dca_scheduler():
                                         (error_str[:500], order_id, plan_id)
                                     )
                                     await db.commit()
-<<<<<<< HEAD
 
                                     if is_order_expired(order_expires):
                                         await mark_order_expired_before_send(
@@ -1967,8 +1913,6 @@ async def dca_scheduler():
                                             manual_send_blocked=True,
                                         )
                                         continue
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                                     
                                     await bot.send_message(
                                         user_id,
@@ -2095,7 +2039,6 @@ async def dca_scheduler():
                                         (error_msg[:500], order_id, plan_id)
                                     )
                                     await db.commit()
-<<<<<<< HEAD
 
                                     if is_order_expired(order_expires):
                                         await mark_order_expired_before_send(
@@ -2107,8 +2050,6 @@ async def dca_scheduler():
                                             manual_send_blocked=True,
                                         )
                                         continue
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                                     
                                     error_notification = build_auto_send_failed_notification(
                                         order_id=order_id,
@@ -2131,7 +2072,6 @@ async def dca_scheduler():
                                     await db.commit()
                         else:
                             # Wallet not configured - ask to send manually
-<<<<<<< HEAD
                             if is_order_expired(order_expires):
                                 await mark_order_expired_before_send(
                                     plan_id=plan_id,
@@ -2142,8 +2082,6 @@ async def dca_scheduler():
                                     manual_send_blocked=True,
                                 )
                                 continue
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                             await bot.send_message(
                                 user_id,
                                 f"✅ DCA plan executed!\n\n"
@@ -2190,10 +2128,7 @@ async def dca_scheduler():
                         
         except Exception as e:
             logger.error(f"Ошибка в DCA scheduler: {e}")
-<<<<<<< HEAD
         await asyncio.sleep(60)  # проверка каждую минуту
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
 
 
 # ============================================================================
@@ -2244,21 +2179,14 @@ async def cmd_help(message: Message):
     await message.answer(
         "📖 AutoDCA Bot — Локальный Telegram бот для DCA\n"
         "━━━━━━━━━━━━━━━━━━\n"
-<<<<<<< HEAD
         "🔐 Кошелёк\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         "1️⃣ Создай файл `wallet.json` в папке с ботом:\n\n"
         "```json\n"
-=======
-        "🔐 Настройка кошелька (один раз)\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "1. Создай wallet.json в папке с ботом:\n\n"
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
         "{\n"
         '  "private_key": "0xYOUR_PRIVATE_KEY",\n'
         '  "password": "YOUR_PASSWORD"\n'
         "}\n"
-<<<<<<< HEAD
         "```\n\n"
         "2️⃣ Выполни команду:\n"
         "`/setwallet`\n\n"
@@ -2267,20 +2195,6 @@ async def cmd_help(message: Message):
         "• `wallet.json` нужен только для первичного импорта\n"
         "• После успешного `/setwallet` файл рекомендуется удалить\n"
         "• Бот должен работать локально (не в облаке)\n\n"
-=======
-        "2. Запусти:\n"
-        "/setwallet\n\n"
-        "Готово! Кошелёк настроен.\n\n"
-        "⚠️ ВАЖНО:\n"
-        "• wallet.json используется ТОЛЬКО для первичного импорта\n"
-        "• Приватный ключ шифруется и сохраняется в keystore\n"
-        "• Пароль хранится в OS keyring\n"
-        "• После успешного /setwallet файл wallet.json БОЛЬШЕ НЕ НУЖЕН\n"
-        "• Рекомендуется удалить wallet.json после инициализации\n"
-        "• Бот переживает перезапуск\n"
-        "• Бот должен работать локально (не в облаке)\n"
-        "\n"
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
         "🔄 Сброс кошелька:\n"
         "1. Выполни команду /deletewallet\n"
         "2. Создай новый wallet.json (если нужен новый ключ)\n"
@@ -2293,7 +2207,6 @@ async def cmd_help(message: Message):
         "3. Автоматически отправляет USDT на FixedFloat\n"
         "4. BTC приходит на твой адрес\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
-<<<<<<< HEAD
         "⚙️ Команды\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "```\n"
@@ -2320,30 +2233,6 @@ async def cmd_help(message: Message):
         "💡 Поддерживаемые сети\n"
         "Arbitrum • BSC • Polygon",
         parse_mode="Markdown"
-=======
-        "ℹ️ Команды\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "/setwallet     — настроить кошелёк\n"
-        "/setdca        — создать DCA план\n"
-        "/status        — статус планов\n"
-        "/execute       — выполнить план вручную\n"
-        "/pause         — приостановить план\n"
-        "/resume        — возобновить план\n"
-        "/delete        — удалить план\n"
-        "/limits        — лимиты обмена\n"
-        "/history       — история операций\n"
-        "/walletstatus  — баланс кошелька\n"
-        "/networks      — доступные сети\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "🔐 Модель безопасности\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "• Эквивалент MetaMask / always-on кошелька\n"
-        "• Все средства под ТВОИМ контролем\n"
-        "• Бот работает ТОЛЬКО локально\n"
-        "• Без облака, без третьих сторон\n"
-        "• Приватные ключи никогда не хранятся незашифрованными\n"
-        "• Пароль в OS keyring (Windows/macOS/Linux)"
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
     )
 
 
@@ -2587,13 +2476,8 @@ async def cmd_execute(message: Message):
     # Получаем конкретный план по ID (только не удаленные)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-<<<<<<< HEAD
             "SELECT from_asset, amount, interval_hours, btc_address, active_order_id, active_order_address, "
             "active_order_amount, active_order_expires, next_run "
-=======
-            "SELECT from_asset, amount, btc_address, active_order_id, active_order_address, "
-            "active_order_amount, active_order_expires "
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
             "FROM dca_plans WHERE id = ? AND user_id = ? AND deleted = 0",
             (plan_id, user_id)
         ) as cur:
@@ -2603,11 +2487,7 @@ async def cmd_execute(message: Message):
         await message.answer("❌ План не найден или не принадлежит тебе")
         return
     
-<<<<<<< HEAD
     from_asset, amount, interval_hours, btc_address, active_order_id, active_order_address, active_order_amount, active_order_expires, plan_next_run = row
-=======
-    from_asset, amount, btc_address, active_order_id, active_order_address, active_order_amount, active_order_expires = row
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
     plan_claimed = False
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -2694,13 +2574,10 @@ async def cmd_execute(message: Message):
                     deposit_address=tx_deposit_address or "",
                     required_amount=float(tx_amount or amount),
                     existing_approve_tx=approve_tx_hash,
-<<<<<<< HEAD
                     plan_id=plan_id,
                     order_expires=active_order_expires,
                     scheduled_time=plan_next_run,
                     interval_hours=interval_hours,
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                 )
                 async with aiosqlite.connect(DB_PATH) as db:
                     if resume_state == "confirmed":
@@ -2718,11 +2595,8 @@ async def cmd_execute(message: Message):
                     await message.answer(f"✅ Transfer по ордеру {active_order_id} успешно подтверждён.")
                 elif resume_state == "tx_pending":
                     await message.answer(f"⚠️ Transfer по ордеру {active_order_id} отправлен, но ещё не подтверждён.")
-<<<<<<< HEAD
                 elif resume_state == "expired":
                     return
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                 else:
                     await message.answer(f"❌ Transfer по ордеру {active_order_id} не выполнен: {resume_error}")
                 return
@@ -2776,13 +2650,10 @@ async def cmd_execute(message: Message):
                         deposit_address=tx_deposit_address or "",
                         required_amount=float(tx_amount or amount),
                         existing_approve_tx=approve_tx_hash,
-<<<<<<< HEAD
                         plan_id=plan_id,
                         order_expires=active_order_expires,
                         scheduled_time=plan_next_run,
                         interval_hours=interval_hours,
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                     )
                     async with aiosqlite.connect(DB_PATH) as db:
                         if resume_state == "confirmed":
@@ -2800,11 +2671,8 @@ async def cmd_execute(message: Message):
                         await message.answer(f"✅ Transfer по ордеру {active_order_id} успешно подтверждён.")
                     elif resume_state == "tx_pending":
                         await message.answer(f"⚠️ Transfer по ордеру {active_order_id} отправлен, но ещё не подтверждён.")
-<<<<<<< HEAD
                     elif resume_state == "expired":
                         return
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                     else:
                         await message.answer(f"❌ Transfer по ордеру {active_order_id} не выполнен: {resume_error}")
                     return
@@ -2989,7 +2857,6 @@ async def cmd_execute(message: Message):
                 f"⏳ Автоматически отправляю USDT..."
             )
             
-<<<<<<< HEAD
             if not await claim_auto_send_execution(plan_id, order_id):
                 return
 
@@ -3003,8 +2870,6 @@ async def cmd_execute(message: Message):
                 )
                 return
 
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
             # Автоматическая отправка USDT
             success, approve_tx, transfer_tx, error_msg = await auto_send_usdt(
                 network_key=from_asset,
@@ -3101,7 +2966,6 @@ async def cmd_execute(message: Message):
                     return
 
                 # Ошибка автоматической отправки - уведомляем пользователя
-<<<<<<< HEAD
                 if is_order_expired(order_expires):
                     await mark_order_expired_before_send(
                         plan_id=plan_id,
@@ -3112,8 +2976,6 @@ async def cmd_execute(message: Message):
                         manual_send_blocked=True,
                     )
                     return
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
                 error_notification = build_auto_send_failed_notification(
                     order_id=order_id,
                     order_url=order_url,
@@ -3127,7 +2989,6 @@ async def cmd_execute(message: Message):
                 logger.error(f"Auto-send failed for order {order_id}: {error_msg}")
         else:
             # Кошелёк не настроен - просим отправить вручную
-<<<<<<< HEAD
             if is_order_expired(order_expires):
                 await mark_order_expired_before_send(
                     plan_id=plan_id,
@@ -3138,8 +2999,6 @@ async def cmd_execute(message: Message):
                     manual_send_blocked=True,
                 )
                 return
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
             await message.answer(
                 f"✅ Ордер создан!\n\n"
                 f"🆔 ID: {order_id}\n"
@@ -4183,20 +4042,14 @@ async def main():
 
     # Recovery scan for in-flight transactions after restart
     await recovery_scan_pending_transactions()
-<<<<<<< HEAD
     await recover_stale_plan_claims()
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
     
     logger.info("🚀 AutoDCA Bot успешно запущен!")
     logger.info("=" * 60)
     
     # Запуск фонового планировщика DCA
     asyncio.create_task(dca_scheduler())
-<<<<<<< HEAD
     await notify_offline_startup_status()
-=======
->>>>>>> eb67557778425c34f5dc6098ea43f20da8c1943e
     
     # Запуск мониторинга завершения ордеров
     asyncio.create_task(order_monitor())
