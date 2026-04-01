@@ -188,6 +188,12 @@ NETWORK_CODES = {
     "USDT-POLYGON": "USDTPOLYGON",
 }
 
+FIXEDFLOAT_ASSET_MAP = {
+    "USDT-ARB": "USDTARB",
+    "USDT-BSC": "USDTBSC",
+    "USDT-POLYGON": "USDTMATIC",
+}
+
 RETRYABLE_ERROR_KEYWORDS = (
     "timeout",
     "timed out",
@@ -252,6 +258,12 @@ def format_balance(value: float) -> str:
     if value < 1:
         return f"{value:.4f}"
     return f"{value:.2f}"
+
+
+def normalize_code(value: str) -> str:
+    if not value:
+        return ""
+    return str(value).replace("-", "").replace("_", "").upper()
 
 
 def validate_btc_address(address: str) -> bool:
@@ -2539,11 +2551,15 @@ async def cmd_networks(message: Message):
             items = await ff_request_async("ccies", {})
             
             # Собираем доступные USDT сети
+            available_networks = {}
             for item in items:
+                logger.info(f"[FF RAW] item: {item}")
                 if item.get("coin") == "USDT":
-                    code = item.get("code")
-                    network = item.get("network", "")
-                    available_networks[code] = network
+                    code = str(item.get("code", "")).upper()
+                    network = str(item.get("network", "")).upper()
+                    if code:
+                        available_networks[code] = network
+            logger.info(f"[FF] available_networks: {available_networks}")
         except Exception as api_error:
             api_available = False
             logger.error(f"API FixedFloat недоступен в /networks: {api_error}")
@@ -2553,16 +2569,32 @@ async def cmd_networks(message: Message):
         text += "Поддерживаемые ботом:\n"
         
         bot_supported = {
-            "USDT-ARB": NETWORK_CODES.get("USDT-ARB", "USDTARBITRUM"),
-            "USDT-BSC": NETWORK_CODES.get("USDT-BSC", "USDTBSC"),
-            "USDT-POLYGON": NETWORK_CODES.get("USDT-POLYGON", "USDTPOLYGON"),
+            "USDT-ARB": FIXEDFLOAT_ASSET_MAP.get("USDT-ARB", "USDTARB"),
+            "USDT-BSC": FIXEDFLOAT_ASSET_MAP.get("USDT-BSC", "USDTBSC"),
+            "USDT-POLYGON": FIXEDFLOAT_ASSET_MAP.get("USDT-POLYGON", "USDTMATIC"),
         }
         
         for bot_name, api_code in bot_supported.items():
             if api_available:
-                if api_code in available_networks:
+                ff_asset = FIXEDFLOAT_ASSET_MAP.get(bot_name)
+                normalized_ff = normalize_code(ff_asset) if ff_asset else ""
+                available = False
+                if normalized_ff:
+                    available = any(
+                        normalized_ff == normalize_code(key)
+                        for key in available_networks.keys()
+                    )
+                logger.info(f"[FF] check {bot_name} -> {ff_asset} -> {available}")
+                if available:
                     status = "✅"
-                    network_name = available_networks[api_code]
+                    matched_key = next(
+                        (
+                            key for key in available_networks.keys()
+                            if normalized_ff == normalize_code(key)
+                        ),
+                        None
+                    )
+                    network_name = available_networks.get(matched_key, "доступна")
                 else:
                     status = "❌"
                     network_name = "недоступна"
