@@ -2582,15 +2582,25 @@ async def cmd_networks(message: Message):
                 if normalized_ff:
                     available = any(
                         normalized_ff == normalize_code(key)
-                        for key in available_networks.keys()
+                        or normalized_ff in normalize_code(key)
+                        or normalize_code(key) in normalized_ff
+                        or normalized_ff in normalize_code(network)
+                        or normalize_code(network) in normalized_ff
+                        for key, network in available_networks.items()
                     )
                 logger.info(f"[FF] check {bot_name} -> {ff_asset} -> {available}")
                 if available:
                     status = "✅"
                     matched_key = next(
                         (
-                            key for key in available_networks.keys()
-                            if normalized_ff == normalize_code(key)
+                            key for key, network in available_networks.items()
+                            if (
+                                normalized_ff == normalize_code(key)
+                                or normalized_ff in normalize_code(key)
+                                or normalize_code(key) in normalized_ff
+                                or normalized_ff in normalize_code(network)
+                                or normalize_code(network) in normalized_ff
+                            )
                         ),
                         None
                     )
