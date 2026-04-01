@@ -15,8 +15,8 @@ from requests.exceptions import Timeout as RequestsTimeout, ConnectionError as R
 logger = logging.getLogger(__name__)
 
 POLYGON_RPC_URLS = [
-    "https://polygon-rpc.com",
     "https://rpc.ankr.com/polygon",
+    "https://polygon-rpc.com",
     "https://polygon-mainnet.public.blastapi.io",
 ]
 LEGACY_GAS_NETWORKS = {"USDT-BSC"}
@@ -24,6 +24,8 @@ GAS_MULTIPLIER = 1.2
 DEFAULT_PRIORITY_FEE_GWEI = 0.1
 POA_MIDDLEWARE_FLAG_ATTR = "_dca_poa_middleware_enabled"
 RPC_TIMEOUT_SECONDS = 10
+RPC_CONNECT_MAX_ATTEMPTS = 3
+RPC_CONNECT_RETRY_DELAY_SECONDS = 1.5
 TX_SEND_MAX_ATTEMPTS = 3
 TX_RETRY_DELAY_SECONDS = 2.5
 GAS_FALLBACK_TRANSFER = 200000
@@ -250,34 +252,44 @@ def create_web3_client(network_key: str) -> Web3:
     rpc_candidates = _build_rpc_candidates(network_key, config["rpc_url"], config["chain_id"])
 
     last_error = None
-    for rpc_url in rpc_candidates:
-        try:
-            logger.info("Trying RPC for %s: %s", config["name"], rpc_url)
-            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": RPC_TIMEOUT_SECONDS}))
-            if not w3.is_connected():
-                raise RuntimeError(f"RPC not reachable for {config['name']}: {rpc_url}")
+    for attempt in range(1, RPC_CONNECT_MAX_ATTEMPTS + 1):
+        for rpc_url in rpc_candidates:
+            try:
+                logger.info(
+                    "Trying RPC for %s (attempt %s/%s): %s",
+                    config["name"], attempt, RPC_CONNECT_MAX_ATTEMPTS, rpc_url
+                )
+                w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": RPC_TIMEOUT_SECONDS}))
+                if not w3.is_connected():
+                    raise RuntimeError(f"RPC not reachable for {config['name']}: {rpc_url}")
 
-            _inject_poa_middleware_if_needed(
-                w3=w3,
-                network_name=config["name"],
-                expected_chain_id=config["chain_id"],
-                rpc_url=rpc_url,
-            )
+                _inject_poa_middleware_if_needed(
+                    w3=w3,
+                    network_name=config["name"],
+                    expected_chain_id=config["chain_id"],
+                    rpc_url=rpc_url,
+                )
 
-            chain_id = w3.eth.chain_id
-            if chain_id != config["chain_id"]:
-                raise RuntimeError(f"RPC chainId mismatch: expected {config['chain_id']}, got {chain_id}")
-            logger.info("Using RPC for %s (chain_id=%s): %s", config["name"], chain_id, rpc_url)
-            return w3
-        except (RequestsTimeout, RequestsConnectionError, TimeoutError, ValueError, OSError, ConnectionError) as e:
-            last_error = e
-            logger.warning(
-                "RPC connection failed for %s: %s, err=%s",
-                config["name"], rpc_url, e
+                chain_id = w3.eth.chain_id
+                if chain_id != config["chain_id"]:
+                    raise RuntimeError(f"RPC chainId mismatch: expected {config['chain_id']}, got {chain_id}")
+                logger.info("Using RPC for %s (chain_id=%s): %s", config["name"], chain_id, rpc_url)
+                return w3
+            except (RequestsTimeout, RequestsConnectionError, TimeoutError, ValueError, OSError, ConnectionError) as e:
+                last_error = e
+                logger.warning(
+                    "RPC connection failed for %s: %s, err=%s",
+                    config["name"], rpc_url, e
+                )
+            except Exception as e:
+                last_error = e
+                logger.warning("Unexpected RPC initialization error for %s: %s, err=%s", config["name"], rpc_url, e)
+        if attempt < RPC_CONNECT_MAX_ATTEMPTS:
+            logger.info(
+                "Retrying RPC discovery for %s in %.1fs (%s/%s)",
+                config["name"], RPC_CONNECT_RETRY_DELAY_SECONDS, attempt + 1, RPC_CONNECT_MAX_ATTEMPTS
             )
-        except Exception as e:
-            last_error = e
-            logger.warning("Unexpected RPC initialization error for %s: %s, err=%s", config["name"], rpc_url, e)
+            time.sleep(RPC_CONNECT_RETRY_DELAY_SECONDS)
 
     raise RuntimeError(
         f"Failed to connect to {config['name']} RPCs ({', '.join(rpc_candidates)}): {last_error}"

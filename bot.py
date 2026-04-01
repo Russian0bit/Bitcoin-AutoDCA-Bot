@@ -175,6 +175,9 @@ except ImportError:
 # This is ONLY a cache - keyring is the single source of truth
 _wallet_passwords = {}
 _order_progress_messages: Dict[str, tuple[int, int]] = {}
+_web3_cache: Dict[str, Any] = {}
+_balances_cache: Dict[tuple[str, str], Dict[str, Any]] = {}
+CACHE_TTL = 20
 
 # Маппинг пользовательских названий сетей на коды FixedFloat API
 # Обновляется при старте бота из реального списка валют
@@ -740,6 +743,7 @@ async def mark_order_completed(plan_id: int, order_id: str, reason: str) -> None
             (plan_id,)
         )
         await db.commit()
+    _balances_cache.clear()
     logger.info("Order %s completed (reason=%s), clearing active order", order_id, reason)
 
 
@@ -840,6 +844,8 @@ async def resume_transfer_after_approve(
         order_id=order_id,
         dry_run=DRY_RUN
     )
+    if approve_tx or transfer_tx:
+        _balances_cache.clear()
     final_approve_tx = approve_tx or existing_approve_tx
 
     if success:
@@ -2033,6 +2039,8 @@ async def dca_scheduler():
                                     order_id=order_id,
                                     dry_run=DRY_RUN
                                 )
+                                if approve_tx or transfer_tx:
+                                    _balances_cache.clear()
                             except Exception as send_error:
                                 # RPC/Network error - mark as blocked, don't advance schedule
                                 error_str = str(send_error)
@@ -3038,6 +3046,8 @@ async def cmd_execute(message: Message):
                 order_id=order_id,
                 dry_run=DRY_RUN
             )
+            if approve_tx or transfer_tx:
+                _balances_cache.clear()
             
             if success:
                 # Сохраняем информацию о транзакции
@@ -3636,11 +3646,10 @@ async def cmd_setwallet(message: Message):
         
         await message.answer(
             f"✅ Кошелёк инициализирован успешно!\n\n"
-            f"📍 Адрес: `{wallet_address}`\n\n"
+            f"📍 Адрес: {wallet_address}\n\n"
             f"🔐 Безопасность:\n"
-            f"• Приватный ключ зашифрован и удалён\n"
-            f"• Пароль сохранён в OS keyring\n"
-            f"• wallet.json перезаписан\n\n"
+            f"• Wallet.json используется только для первичного импорта\n"
+            f"• Приватный ключ зашифрован и сохранён в keystore\n\n"
             f"⚠️ УДАЛИ все резервные копии wallet.json с приватным ключом!\n\n"
             f"💡 Автоотправка активирована для всех сетей",
             parse_mode="Markdown"
@@ -3651,6 +3660,151 @@ async def cmd_setwallet(message: Message):
     except Exception as e:
         logger.error(f"Error in cmd_setwallet: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
+
+
+async def fetch_network_status(network_key: str, wallet_address: str):
+    config = get_network_config(network_key)
+    gas_token = config["native_token"]
+    rpc_timeout = 10
+    chain_id_timeout = 8
+    balance_timeout = 10
+    cache_key = (wallet_address.lower(), network_key)
+    cached = _balances_cache.get(cache_key)
+    if cached:
+        age = time.time() - cached["ts"]
+        if age < CACHE_TTL:
+            return cached["data"]
+
+    w3 = _web3_cache.get(network_key)
+    connect_error = None
+    balance_error = False
+    usdt_balance = None
+    native_balance = None
+
+    try:
+        if w3 is not None:
+            try:
+                cached_chain_id = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: int(w3.eth.chain_id)),
+                    timeout=chain_id_timeout
+                )
+                if cached_chain_id != int(config["chain_id"]):
+                    raise RuntimeError(
+                        f"Cached chain ID mismatch: expected {config['chain_id']}, got {cached_chain_id}"
+                    )
+                await asyncio.wait_for(
+                    asyncio.to_thread(lambda: int(w3.eth.block_number)),
+                    timeout=chain_id_timeout
+                )
+            except Exception as e:
+                logger.warning("walletstatus cached web3 invalid for %s: %s", network_key, e)
+                _web3_cache.pop(network_key, None)
+                w3 = None
+
+        for attempt in range(1, 4):
+            if w3 is not None:
+                connect_error = None
+                break
+            try:
+                w3 = await asyncio.wait_for(
+                    asyncio.to_thread(get_web3_instance, network_key),
+                    timeout=rpc_timeout
+                )
+                chain_id = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: int(w3.eth.chain_id)),
+                    timeout=chain_id_timeout
+                )
+                if chain_id != int(config["chain_id"]):
+                    raise RuntimeError(
+                        f"Chain ID mismatch: expected {config['chain_id']}, got {chain_id}"
+                    )
+                await asyncio.wait_for(
+                    asyncio.to_thread(lambda: int(w3.eth.block_number)),
+                    timeout=chain_id_timeout
+                )
+                _web3_cache.setdefault(network_key, w3)
+                connect_error = None
+                break
+            except Exception as e:
+                connect_error = e
+                logger.warning(
+                    "walletstatus RPC attempt %s/3 failed for %s: %s",
+                    attempt, network_key, e
+                )
+                if attempt < 3:
+                    await asyncio.sleep(1.0)
+
+        if connect_error or w3 is None:
+            return {
+                "name": config["name"],
+                "gas_token": gas_token,
+                "usdt_text": "—",
+                "native_text": "—",
+                "rpc_error": True,
+                "balance_error": False,
+                "has_usdt": False,
+            }
+
+        try:
+            usdt_balance = await asyncio.wait_for(
+                asyncio.to_thread(get_usdt_balance, w3, network_key, wallet_address),
+                timeout=balance_timeout
+            )
+        except Exception as e:
+            logger.error(f"Error getting USDT balance for {network_key}: {e}")
+            balance_error = True
+
+        try:
+            native_balance = await asyncio.wait_for(
+                asyncio.to_thread(get_native_balance, w3, wallet_address),
+                timeout=balance_timeout
+            )
+        except Exception as e:
+            logger.error(f"Error getting native balance for {network_key}: {e}")
+            balance_error = True
+
+        if usdt_balance is None:
+            usdt_text = "— ⚠️ Нет данных по USDT"
+        elif usdt_balance < 1e-6:
+            usdt_text = "0.00 ⚠️ Недостаточно USDT"
+        else:
+            usdt_text = f"{usdt_balance:.2f}"
+
+        if native_balance is None:
+            native_text = "— ⚠️ Нет данных по сети"
+        elif native_balance < 1e-8:
+            native_text = f"{native_balance:.2f} ⚠️ Недостаточно {gas_token} для оплаты газа"
+        else:
+            native_text = f"{native_balance:.2f}"
+
+        result = {
+            "name": config["name"],
+            "gas_token": gas_token,
+            "usdt_text": usdt_text,
+            "native_text": native_text,
+            "rpc_error": False,
+            "balance_error": balance_error,
+            "has_usdt": usdt_balance is not None and usdt_balance > 1e-6,
+            "usdt_balance": usdt_balance,
+            "native_balance": native_balance,
+        }
+        if not connect_error and not balance_error:
+            _balances_cache[cache_key] = {
+                "data": result,
+                "ts": time.time()
+            }
+        return result
+    except Exception as e:
+        logger.error(f"Unexpected walletstatus error for {network_key}: {e}")
+        return {
+            "name": config["name"],
+            "gas_token": gas_token,
+            "usdt_text": "—",
+            "native_text": "—",
+            "rpc_error": True,
+            "balance_error": False,
+            "has_usdt": False,
+        }
 
 
 @dp.message(Command("walletstatus"))
@@ -3675,49 +3829,65 @@ async def cmd_walletstatus(message: Message):
         )
         return
     
+    from web3 import Web3
+
     wallet_address = wallet_row[0]
+    if not Web3.is_address(wallet_address):
+        await message.answer("❌ Invalid wallet address")
+        return
+
     status_text = f"💼 Wallet Status:\n\n"
-    status_text += f"📍 Address: {wallet_address[:10]}...{wallet_address[-6:]}\n\n"
+    status_text += f"📍 Address:\n{wallet_address[:10]}...{wallet_address[-6:]}\n\n"
     status_text += f"Balances on all networks:\n\n"
-    
+
     from networks import NETWORKS
-    for network_key in NETWORKS.keys():
-        config = get_network_config(network_key)
-        
-        try:
-            w3 = await asyncio.wait_for(
-                asyncio.to_thread(get_web3_instance, network_key),
-                timeout=20
-            )
-            usdt_balance = await asyncio.wait_for(
-                asyncio.to_thread(get_usdt_balance, w3, network_key, wallet_address),
-                timeout=20
-            )
-            native_balance = await asyncio.wait_for(
-                asyncio.to_thread(get_native_balance, w3, wallet_address),
-                timeout=20
-            )
-            
+    semaphore = asyncio.Semaphore(3)
+
+    async def _fetch_with_limit(network_key: str):
+        async with semaphore:
+            return await fetch_network_status(network_key, wallet_address)
+
+    results = await asyncio.gather(
+        *[_fetch_with_limit(nk) for nk in NETWORKS.keys()],
+        return_exceptions=False
+    )
+
+    for result in results:
+        name = result["name"]
+        gas_token = result["gas_token"]
+        usdt_text = result["usdt_text"]
+        native_text = result["native_text"]
+        rpc_error = result["rpc_error"]
+        balance_error = result["balance_error"]
+
+        if rpc_error:
             status_text += (
                 f"━━━━━━━━━━━━━━\n"
-                f"🌐 {config['name']}\n"
-                f"💵 USDT: {usdt_balance:.2f}\n"
-                f"⛽ {config['native_token']}: {native_balance:.2f}\n\n"
+                f"🌐 {name}\n"
+                f"💵 USDT: —\n"
+                f"⛽ {gas_token}: —\n"
+                f"❌ RPC недоступен\n\n"
             )
-        except Exception as e:
-            logger.error(f"Error getting balance for {network_key}: {e}")
+            continue
+
+        if balance_error:
             status_text += (
                 f"━━━━━━━━━━━━━━\n"
-                f"🌐 {config['name']}\n"
-                f"❌ Error: {str(e)[:50]}\n\n"
+                f"🌐 {name}\n"
+                f"💵 USDT: —\n"
+                f"⛽ {gas_token}: —\n"
+                f"⚠️ Ошибка получения баланса\n\n"
             )
-    
-    # Show password status
-    has_password = user_id in _wallet_passwords
-    status_text += f"\n🔐 Password in keyring: {'✅' if has_password else '❌'}\n"
-    
-    if not has_password:
-        status_text += "\n⚠️ No password found. Auto-send disabled."
+            continue
+
+        status_text += (
+            f"━━━━━━━━━━━━━━\n"
+            f"🌐 {name}\n"
+            f"💵 USDT: {usdt_text}\n"
+            f"⛽ {gas_token}: {native_text}\n"
+        )
+
+        status_text += "\n"
     
     await message.answer(status_text)
 

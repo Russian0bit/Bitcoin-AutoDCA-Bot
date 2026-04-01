@@ -33,9 +33,9 @@ NETWORKS_MAINNET = {
     },
     "USDT-POLYGON": {
         "name": "Polygon",
-        "rpc_url": "https://polygon-rpc.com/",
+        "rpc_url": "https://rpc.ankr.com/polygon",
         "chain_id": 137,
-        "native_token": "POLYGON",
+        "native_token": "MATIC",
         "usdt_contract": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",  # USDT on Polygon
         "blockchair_base": "https://blockchair.com/bitcoin/transaction",
         "explorer_base": "https://polygonscan.com/tx/",
@@ -61,15 +61,6 @@ NETWORKS_TESTNET = {
         "usdt_contract": "0x0000000000000000000000000000000000000000",  # Mock/test contract
         "blockchair_base": "https://blockchair.com/bitcoin/testnet/transaction",
         "explorer_base": "https://testnet.bscscan.com/tx/",
-    },
-    "USDT-POLYGON": {
-        "name": "Polygon Mumbai",
-        "rpc_url": "https://rpc-mumbai.maticvigil.com/",
-        "chain_id": 80001,
-        "native_token": "POLYGON",
-        "usdt_contract": "0x0000000000000000000000000000000000000000",  # Mock/test contract
-        "blockchair_base": "https://blockchair.com/bitcoin/testnet/transaction",
-        "explorer_base": "https://mumbai.polygonscan.com/tx/",
     },
 }
 
