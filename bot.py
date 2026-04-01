@@ -1,5 +1,6 @@
 import asyncio
 import atexit
+import copy
 import html
 import logging
 import os
@@ -235,6 +236,22 @@ def format_interval(hours: int) -> str:
         return "месяц"
     else:
         return f"{hours}ч"
+
+
+def format_balance(value: float) -> str:
+    if value is None:
+        return "—"
+    if value < 1e-8:
+        if value < 1e-12:
+            return "~0"
+        return "< 0.00000001"
+    if value < 0.0001:
+        return f"{value:.8f}"
+    if value < 0.01:
+        return f"{value:.6f}"
+    if value < 1:
+        return f"{value:.4f}"
+    return f"{value:.2f}"
 
 
 def validate_btc_address(address: str) -> bool:
@@ -3663,6 +3680,8 @@ async def cmd_setwallet(message: Message):
 
 
 async def fetch_network_status(network_key: str, wallet_address: str):
+    from web3 import Web3
+
     config = get_network_config(network_key)
     gas_token = config["native_token"]
     rpc_timeout = 10
@@ -3673,13 +3692,15 @@ async def fetch_network_status(network_key: str, wallet_address: str):
     if cached:
         age = time.time() - cached["ts"]
         if age < CACHE_TTL:
-            return cached["data"]
+            return copy.deepcopy(cached["data"])
 
     w3 = _web3_cache.get(network_key)
     connect_error = None
     balance_error = False
     usdt_balance = None
     native_balance = None
+    usdt_error = False
+    native_error = False
 
     try:
         if w3 is not None:
@@ -3722,6 +3743,8 @@ async def fetch_network_status(network_key: str, wallet_address: str):
                     asyncio.to_thread(lambda: int(w3.eth.block_number)),
                     timeout=chain_id_timeout
                 )
+                chain_id_debug = await asyncio.to_thread(lambda: w3.eth.chain_id)
+                logger.info(f"[RPC] {network_key} chain_id={chain_id_debug}")
                 _web3_cache.setdefault(network_key, w3)
                 connect_error = None
                 break
@@ -3745,37 +3768,67 @@ async def fetch_network_status(network_key: str, wallet_address: str):
                 "has_usdt": False,
             }
 
+        logger.info(f"[BALANCE] {network_key} address: {wallet_address}")
+        try:
+            checksum = Web3.to_checksum_address(wallet_address)
+        except Exception:
+            checksum = wallet_address
+        logger.info(f"[BALANCE] {network_key} checksum: {checksum}")
+
         try:
             usdt_balance = await asyncio.wait_for(
                 asyncio.to_thread(get_usdt_balance, w3, network_key, wallet_address),
                 timeout=balance_timeout
             )
+            if usdt_balance is not None and usdt_balance == 0:
+                await asyncio.sleep(0.3)
+                usdt_balance = await asyncio.wait_for(
+                    asyncio.to_thread(get_usdt_balance, w3, network_key, wallet_address),
+                    timeout=balance_timeout
+                )
+            logger.info(f"[BALANCE] {network_key} usdt raw: {usdt_balance}")
         except Exception as e:
             logger.error(f"Error getting USDT balance for {network_key}: {e}")
-            balance_error = True
+            usdt_error = True
+            logger.info(f"[BALANCE] {network_key} usdt raw: {usdt_balance}")
 
         try:
             native_balance = await asyncio.wait_for(
                 asyncio.to_thread(get_native_balance, w3, wallet_address),
                 timeout=balance_timeout
             )
+            if native_balance is not None and native_balance == 0:
+                await asyncio.sleep(0.3)
+                native_balance = await asyncio.wait_for(
+                    asyncio.to_thread(get_native_balance, w3, wallet_address),
+                    timeout=balance_timeout
+                )
+            native_wei = await asyncio.to_thread(
+                w3.eth.get_balance,
+                Web3.to_checksum_address(wallet_address)
+            )
+            logger.info(f"[BALANCE] {network_key} native wei: {native_wei}")
+            logger.info(f"[BALANCE] {network_key} native raw: {native_balance}")
         except Exception as e:
             logger.error(f"Error getting native balance for {network_key}: {e}")
-            balance_error = True
+            native_error = True
+            logger.info(f"[BALANCE] {network_key} native raw: {native_balance}")
+
+        balance_error = usdt_error or native_error
 
         if usdt_balance is None:
             usdt_text = "— ⚠️ Нет данных по USDT"
         elif usdt_balance < 1e-6:
-            usdt_text = "0.00 ⚠️ Недостаточно USDT"
+            usdt_text = f"{format_balance(usdt_balance)} ⚠️ Недостаточно USDT"
         else:
-            usdt_text = f"{usdt_balance:.2f}"
+            usdt_text = format_balance(usdt_balance)
 
         if native_balance is None:
-            native_text = "— ⚠️ Нет данных по сети"
+            native_text = "— ⚠️ Нет данных RPC"
         elif native_balance < 1e-8:
-            native_text = f"{native_balance:.2f} ⚠️ Недостаточно {gas_token} для оплаты газа"
+            native_text = f"{format_balance(native_balance)} ⚠️ Недостаточно {gas_token} для оплаты газа"
         else:
-            native_text = f"{native_balance:.2f}"
+            native_text = format_balance(native_balance)
 
         result = {
             "name": config["name"],

@@ -14,10 +14,23 @@ from requests.exceptions import Timeout as RequestsTimeout, ConnectionError as R
 
 logger = logging.getLogger(__name__)
 
+ARBITRUM_RPC_URLS = [
+    "https://arb1.arbitrum.io/rpc",
+    "https://rpc.ankr.com/arbitrum",
+    "https://arbitrum.blockpi.network/v1/rpc/public",
+]
+
+BSC_RPC_URLS = [
+    "https://bsc-dataseed.binance.org",
+    "https://rpc.ankr.com/bsc",
+    "https://bsc.publicnode.com",
+]
+
 POLYGON_RPC_URLS = [
     "https://rpc.ankr.com/polygon",
     "https://polygon-rpc.com",
-    "https://polygon-mainnet.public.blastapi.io",
+    "https://polygon.blockpi.network/v1/rpc/public",
+    "https://1rpc.io/matic",
 ]
 LEGACY_GAS_NETWORKS = {"USDT-BSC"}
 GAS_MULTIPLIER = 1.2
@@ -140,10 +153,18 @@ def _inject_poa_middleware_if_needed(w3: Web3, network_name: str, expected_chain
 def _build_rpc_candidates(network_key: str, primary_rpc: str, chain_id: int) -> list[str]:
     """Build ordered list of RPC endpoints with per-network fallbacks."""
     rpc_candidates = [primary_rpc]
-    if network_key == "USDT-POLYGON" and int(chain_id) == 137:
-        for rpc_url in POLYGON_RPC_URLS:
-            if rpc_url not in rpc_candidates:
-                rpc_candidates.append(rpc_url)
+    if network_key == "USDT-ARB":
+        fallback_list = ARBITRUM_RPC_URLS
+    elif network_key == "USDT-BSC":
+        fallback_list = BSC_RPC_URLS
+    elif network_key == "USDT-POLYGON" and int(chain_id) == 137:
+        fallback_list = POLYGON_RPC_URLS
+    else:
+        fallback_list = []
+
+    for rpc_url in fallback_list:
+        if rpc_url not in rpc_candidates:
+            rpc_candidates.append(rpc_url)
     return rpc_candidates
 
 
@@ -385,7 +406,7 @@ def get_native_balance(w3: Web3, address: str) -> float:
     """
     try:
         balance_wei = w3.eth.get_balance(Web3.to_checksum_address(address))
-        balance = w3.from_wei(balance_wei, "ether")
+        balance = Web3.from_wei(balance_wei, "ether")
         masked_addr = f"{address[:6]}...{address[-4:]}" if len(address) > 10 else address
         logger.info(f"Native balance check: {masked_addr} = {float(balance):.6f}")
         return float(balance)
