@@ -1,5 +1,6 @@
 import asyncio
 import atexit
+import html
 import logging
 import os
 import platform
@@ -173,13 +174,14 @@ except ImportError:
 # Keys: user_id -> password
 # This is ONLY a cache - keyring is the single source of truth
 _wallet_passwords = {}
+_order_progress_messages: Dict[str, tuple[int, int]] = {}
 
 # Маппинг пользовательских названий сетей на коды FixedFloat API
 # Обновляется при старте бота из реального списка валют
 NETWORK_CODES = {
     "USDT-ARB": "USDTARBITRUM",
     "USDT-BSC": "USDTBSC", 
-    "USDT-MATIC": "USDTMATIC",
+    "USDT-POLYGON": "USDTPOLYGON",
 }
 
 RETRYABLE_ERROR_KEYWORDS = (
@@ -352,7 +354,7 @@ def build_auto_send_failed_notification(
         f"🔗 Ссылка: {order_url}\n\n"
         f"Причина:\n{human_error}\n\n"
         "💵 Отправить вручную:\n"
-        f"{required_amount:.6f} USDT\n"
+        f"{required_amount:.2f} USDT\n"
         "📍 На адрес:\n"
         f"{deposit_address}\n\n"
         f"⏰ Ордер действителен: {time_text}"
@@ -648,6 +650,63 @@ async def get_fixedfloat_order_status(order_id: str) -> str:
     except Exception as e:
         logger.warning(f"Failed to fetch FixedFloat order status for {order_id}: {e}")
         return ""
+
+
+async def get_fixedfloat_order_status_with_retry(order_id: str, attempts: int = 7, delay_seconds: float = 2.5) -> str:
+    """Retry FixedFloat status checks and return empty string if still unavailable."""
+    for attempt in range(attempts):
+        status = await get_fixedfloat_order_status(order_id)
+        if status:
+            return status
+        if attempt < attempts - 1:
+            await asyncio.sleep(delay_seconds)
+    return ""
+
+
+async def fetch_btc_txid(order_id: str) -> str:
+    """Fetch btc_txid from completed_orders with short retries."""
+    for attempt in range(3):
+        try:
+            async with aiosqlite.connect(DB_PATH) as tx_db:
+                async with tx_db.execute(
+                    "SELECT btc_txid FROM completed_orders WHERE order_id = ? LIMIT 1",
+                    (order_id,)
+                ) as tx_cur:
+                    tx_row = await tx_cur.fetchone()
+            btc_txid = tx_row[0] if tx_row and tx_row[0] else ""
+            if btc_txid:
+                return str(btc_txid)
+        except Exception as e:
+            logger.warning(f"Failed to fetch btc_txid for order {order_id} (attempt {attempt + 1}/3): {e}")
+        if attempt < 2:
+            await asyncio.sleep(0.4)
+    return ""
+
+
+def track_order_progress_message(order_id: str, user_id: int, message_id: int) -> None:
+    """Remember progress message for further edit updates."""
+    _order_progress_messages[str(order_id)] = (int(user_id), int(message_id))
+
+
+async def update_order_progress_message(user_id: int, order_id: str, text: str) -> None:
+    """Try edit existing progress message, fallback to sending a new one."""
+    msg_meta = _order_progress_messages.get(str(order_id))
+    if msg_meta and msg_meta[0] == int(user_id):
+        try:
+            await bot.edit_message_text(
+                chat_id=int(user_id),
+                message_id=msg_meta[1],
+                text=text,
+                parse_mode="HTML",
+            )
+            return
+        except Exception as e:
+            logger.warning("Failed to edit progress message for order %s: %s", order_id, e)
+    try:
+        sent_msg = await bot.send_message(int(user_id), text, parse_mode="HTML")
+        track_order_progress_message(str(order_id), int(user_id), int(sent_msg.message_id))
+    except Exception as e:
+        logger.error("Failed to send progress message for order %s: %s", order_id, e)
 
 
 async def mark_order_completed(plan_id: int, order_id: str, reason: str) -> None:
@@ -1101,8 +1160,8 @@ def ff_request(method: str, params=None) -> dict:
                 network_key = "USDT-ARB"
             elif "BSC" in network_key.upper():
                 network_key = "USDT-BSC"
-            elif "MATIC" in network_key.upper() or "POLYGON" in network_key.upper():
-                network_key = "USDT-MATIC"
+            elif "POLYGON" in network_key.upper():
+                network_key = "USDT-POLYGON"
             mock_response = get_mock_fixedfloat_price(network_key)
             logger.info(f"[MOCK] FixedFloat ответ: {method}")
             return mock_response["data"]
@@ -1115,8 +1174,8 @@ def ff_request(method: str, params=None) -> dict:
                 network_key = "USDT-ARB"
             elif "BSC" in from_ccy.upper():
                 network_key = "USDT-BSC"
-            elif "MATIC" in from_ccy.upper() or "POLYGON" in from_ccy.upper():
-                network_key = "USDT-MATIC"
+            elif "POLYGON" in from_ccy.upper():
+                network_key = "USDT-POLYGON"
             
             amount = float(params.get("amount", 0))
             btc_address = params.get("toAddress", "")
@@ -1259,8 +1318,8 @@ async def update_network_codes():
                     NETWORK_CODES["USDT-ARB"] = code
                 elif "BSC" in network or "BEP20" in network:
                     NETWORK_CODES["USDT-BSC"] = code
-                elif "POLYGON" in network or "MATIC" in network:
-                    NETWORK_CODES["USDT-MATIC"] = code
+                elif "POLYGON" in network:
+                    NETWORK_CODES["USDT-POLYGON"] = code
         
         logger.info(f"Обновлены коды сетей: {NETWORK_CODES}")
     except Exception as e:
@@ -1359,7 +1418,7 @@ async def init_db():
     
     Структура таблицы:
     - user_id: Telegram ID пользователя (НЕ уникальный - может быть несколько планов)
-    - from_asset: сеть USDT (USDT-ARB, USDT-BSC, USDT-MATIC)
+    - from_asset: сеть USDT (USDT-ARB, USDT-BSC, USDT-POLYGON)
     - amount: сумма покупки в USD
     - interval_hours: интервал между покупками (в часах)
     - btc_address: адрес BTC для получения
@@ -1518,6 +1577,19 @@ async def init_db():
                 FOREIGN KEY(user_id) REFERENCES dca_plans(user_id)
             )
         ''')
+
+        await db.execute(
+            "DELETE FROM sent_transactions "
+            "WHERE order_id IS NOT NULL AND id NOT IN ("
+            "  SELECT MIN(id) FROM sent_transactions WHERE order_id IS NOT NULL GROUP BY order_id"
+            ")"
+        )
+        await db.commit()
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sent_transactions_order_id "
+            "ON sent_transactions(order_id)"
+        )
+        await db.commit()
         
         await db.commit()
     logger.info("База данных инициализирована")
@@ -1576,7 +1648,7 @@ async def dca_scheduler():
                             inflight_row = await inflight_cur.fetchone()
                         if inflight_row:
                             inflight_order_id, inflight_state = inflight_row
-                            inflight_status = await get_fixedfloat_order_status(inflight_order_id)
+                            inflight_status = await get_fixedfloat_order_status_with_retry(inflight_order_id)
                             if inflight_status in SUCCESS_FIXEDFLOAT_ORDER_STATUSES:
                                 await mark_order_completed(plan_id, inflight_order_id, f"fixedfloat_{inflight_status}")
                                 continue
@@ -1584,33 +1656,11 @@ async def dca_scheduler():
                                 logger.info("Order %s expired, clearing active order", inflight_order_id)
                                 await mark_order_failed(plan_id, inflight_order_id, f"FixedFloat order {inflight_status}")
                             elif inflight_status == "":
-                                async with db.execute(
-                                    "SELECT active_order_expires FROM dca_plans WHERE id = ?",
-                                    (plan_id,)
-                                ) as expires_cur:
-                                    expires_row = await expires_cur.fetchone()
-                                local_expires = expires_row[0] if expires_row else None
-                                fallback_result = await finalize_expired_unavailable_order(
-                                    plan_id, inflight_order_id, local_expires, now
+                                logger.info(
+                                    "Skip DCA plan_id=%s: in-flight order %s status unavailable after retries",
+                                    plan_id, inflight_order_id
                                 )
-                                if fallback_result == "completed":
-                                    continue
-                                if fallback_result == "pending":
-                                    logger.info(
-                                        "Skip DCA plan_id=%s: order %s expired, status unavailable, tx still pending",
-                                        plan_id, inflight_order_id
-                                    )
-                                    continue
-                                if fallback_result == "not_expired":
-                                    logger.info(
-                                        f"Skip DCA plan_id={plan_id}: in-flight tx state={inflight_state} order={inflight_order_id}, status unavailable"
-                                    )
-                                    continue
-                                else:
-                                    logger.info(
-                                        "Order %s status unavailable and locally expired; fallback marked failed",
-                                        inflight_order_id
-                                    )
+                                continue
                             else:
                                 logger.info(f"Skip DCA plan_id={plan_id}: in-flight tx state={inflight_state} order={inflight_order_id}")
                                 continue
@@ -1625,7 +1675,7 @@ async def dca_scheduler():
                         if order_check:
                             existing_order_id, existing_order_expires = order_check
                             if existing_order_id:
-                                ff_order_status = await get_fixedfloat_order_status(existing_order_id)
+                                ff_order_status = await get_fixedfloat_order_status_with_retry(existing_order_id)
                                 if ff_order_status in SUCCESS_FIXEDFLOAT_ORDER_STATUSES:
                                     await mark_order_completed(plan_id, existing_order_id, f"fixedfloat_{ff_order_status}")
                                     continue
@@ -1955,13 +2005,8 @@ async def dca_scheduler():
                             )
                             await db.commit()
                             
-                            await bot.send_message(
-                                user_id,
-                                f"✅ DCA plan executed!\n\n"
-                                f"🆔 Order: {order_id}\n"
-                                f"🔗 Link: {order_url}\n\n"
-                                f"⏳ Auto-sending USDT..."
-                            )
+                            progress_msg = await bot.send_message(user_id, "⏳ Выполняю ордер...")
+                            track_order_progress_message(str(order_id), int(user_id), int(progress_msg.message_id))
                             
                             if not await claim_auto_send_execution(plan_id, order_id):
                                 continue
@@ -2058,35 +2103,26 @@ async def dca_scheduler():
                             
                             if success:
                                 # Update transaction record with hashes and 'sent' state
-                                config = get_network_config(from_asset)
                                 await db.execute(
                                     "UPDATE sent_transactions SET approve_tx_hash = ?, transfer_tx_hash = ?, state = 'sent' WHERE order_id = ? AND plan_id = ?",
                                     (approve_tx, transfer_tx, order_id, plan_id)
                                 )
                                 await db.commit()
                                 
-                                explorer_base = config["explorer_base"]
-                                transfer_url = f"{explorer_base}{transfer_tx}" if transfer_tx else None
+                                safe_order_id = html.escape(str(order_id))
                                 
                                 msg = (
                                     f"✅ USDT sent automatically!\n\n"
-                                    f"🆔 Order: {order_id}\n"
-                                    f"🔗 Link: {order_url}\n\n"
-                                    f"💵 Sent: {required_amount:.6f} USDT\n"
+                                    f'🆔 Order: <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
+                                    f"\n"
+                                    f"💵 Sent: {required_amount:.2f} USDT\n"
                                     f"📍 To: {deposit_address[:10]}...{deposit_address[-6:]}\n\n"
                                 )
-                                
-                                if approve_tx:
-                                    approve_url = f"{explorer_base}{approve_tx}"
-                                    msg += f"✅ Approve: {approve_url}\n"
-                                
-                                if transfer_url:
-                                    msg += f"✅ Transfer: {transfer_url}\n"
                                 
                                 if DRY_RUN:
                                     msg += f"\n⚠️ DRY RUN MODE - transactions not broadcast"
                                 
-                                await bot.send_message(user_id, msg)
+                                await update_order_progress_message(int(user_id), str(order_id), msg)
                                 
                                 logger.info(f"Auto-send successful: order_id={order_id}, approve_tx={approve_tx}, transfer_tx={transfer_tx}")
                                 
@@ -2114,7 +2150,6 @@ async def dca_scheduler():
                                         f"⚠️ Транзакция отправлена, но ещё не подтверждена сетью\n\n"
                                         f"🆔 Ордер: {order_id}\n"
                                         f"🌐 Сеть: {from_asset}\n"
-                                        f"🔗 TX: {pending_tx_hash}\n\n"
                                         f"Новый ордер не будет создан, пока статус TX не определится."
                                     )
                                     continue
@@ -2133,7 +2168,6 @@ async def dca_scheduler():
                                             f"⚠️ Транзакция отправлена, но подтверждение ещё не получено\n\n"
                                             f"🆔 Ордер: {order_id}\n"
                                             f"🌐 Сеть: {from_asset}\n"
-                                            f"🔗 TX: {pending_tx_hash}\n\n"
                                             f"Новый ордер не будет создан, пока статус TX не определится."
                                         )
                                     else:
@@ -2268,7 +2302,7 @@ async def cmd_start(message: Message):
     
     await message.answer(
         f"👋 Привет, @{username}!\n\n"
-        f"🤖 AutoDCA Bot - Автоматическая покупка BTC через FixedFloat\n\n"
+        f"🤖 Я Bitcoin AutoDCA Bot, разработанный для автопокупки BTC по стратегии DCA\n\n"
         f"📋 Доступные команды:\n\n"
         f"🔧 Настройка:\n"
         f"/setwallet — настроить кошелёк\n"
@@ -2277,7 +2311,7 @@ async def cmd_start(message: Message):
         f"/pause — приостановить план\n"
         f"/resume — возобновить план\n"
         f"/delete — удалить план\n\n"
-        f"💱 Ручные операции:\n"
+        f"💱 Команды:\n"
         f"/execute — выполнить план вручную\n"
         f"/networks — доступные сети\n"
         f"/limits — лимиты обмена\n\n"
@@ -2286,7 +2320,9 @@ async def cmd_start(message: Message):
         f"/walletstatus — баланс кошелька\n"
         f"/history — история операций\n"
         f"/ping — проверка бота\n\n"
-        f"💡 Начни с /setwallet для настройки кошелька!",
+        f"💡 Начни с /setwallet для настройки кошелька!\n\n"
+        f"Created by @Russian0bit\n"
+        f"Больше о Биткоине и финансах у меня на канале @Cryptobotan",
         parse_mode=None  # Plain text, no markdown
     )
     logger.info(f"New user: {user_id} (@{username})")
@@ -2298,62 +2334,50 @@ async def cmd_help(message: Message):
     Команда /help - подробная справка по использованию бота.
     """
     await message.answer(
-        "📖 AutoDCA Bot — Локальный Telegram бот для DCA\n"
+        "Я Bitcoin AutoDCA Bot, разработанный для автопокупки BTC по стратегии DCA\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "🔐 Кошелёк\n"
+        "🔐 Что я могу?\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        "1️⃣ Создай файл `wallet.json` в папке с ботом:\n\n"
-        "```json\n"
-        "{\n"
-        '  "private_key": "0xYOUR_PRIVATE_KEY",\n'
-        '  "password": "YOUR_PASSWORD"\n'
-        "}\n"
-        "```\n\n"
-        "2️⃣ Выполни команду:\n"
-        "`/setwallet`\n\n"
-        "✅ Кошелёк зашифрован и сохранён в Keystore\n\n"
-        "⚠️ Важно:\n"
-        "• `wallet.json` нужен только для первичного импорта\n"
-        "• После успешного `/setwallet` файл рекомендуется удалить\n"
-        "• Бот должен работать локально (не в облаке)\n\n"
+        "Автопокупка BTC за USDT с вашего EVM кошелька\n"
+        "Сети: Arbitrum, Polygon, BSC\n"
+        "Автоотправка BTC на ваш Bitcoin адрес\n"
+        "DCA стратегии: 1 раз в день / неделю / месяц\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "⚠️ ВАЖНО:\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "• После успешного /setwallet не забудь удалить wallet.json\n"
+        "• Telegram — интерфейс управления DCA стратегиями\n"
+        "• Бот работает локально на вашем компьютере\n"
+        "• Все приватные ключи зашифрованы и хранятся у вас\n"
+        "• Для 24/7 работы нужен сервер или автозапуск\n"
+        "• После перезапуска настройки и планы сохраняются\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "⚙️ Как это работает?\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "1. Создаешь DCA план: /setdca\n"
+        "2. Покупка BTC происходит автоматически по расписанию\n"
+        "3. Бот создает ордер на ff.io\n"
+        "4. Отправляет USDT на адрес от ff.io\n"
+        "5. BTC приходит на указанный адрес\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "ℹ️ Команды\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "/setwallet     — настроить кошелёк\n"
+        "/setdca        — создать DCA план\n"
+        "/status        — статус планов\n"
+        "/limits        — лимиты обмена\n"
+        "/history       — история операций\n"
+        "/walletstatus  — баланс кошелька\n"
+        "/networks      — доступные сети\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
         "🔄 Сброс кошелька:\n"
-        "1. Выполни команду /deletewallet\n"
-        "2. Создай новый wallet.json (если нужен новый ключ)\n"
-        "3. Запусти /setwallet снова\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "💱 Как это работает\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        "1. Создаёшь DCA план: /setdca\n"
-        "2. Бот работает 24/7 по расписанию\n"
-        "3. Автоматически отправляет USDT на FixedFloat\n"
-        "4. BTC приходит на твой адрес\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "⚙️ Команды\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "```\n"
-        "/setwallet      настроить кошелёк\n"
-        "/setdca         создать DCA план\n"
-        "/status         статус планов\n"
-        "/execute        выполнить план вручную\n"
-        "/pause          приостановить план\n"
-        "/resume         возобновить план\n"
-        "/delete         удалить план\n"
-        "/limits         лимиты обмена\n"
-        "/history        история операций\n"
-        "/walletstatus   баланс кошелька\n"
-        "/networks       доступные сети\n"
-        "```\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "🔐 Безопасность\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "• Средства под вашим контролем\n"
-        "• Бот работает локально\n"
-        "• Без облачных сервисов\n"
-        "• Приватные ключи не хранятся открыто\n"
-        "• Пароль хранится в OS keyring\n\n"
-        "💡 Поддерживаемые сети\n"
-        "Arbitrum • BSC • Polygon",
-        parse_mode="Markdown"
+        "1. Выполни /deletewallet\n"
+        "2. Создай новый wallet.json (если нужен другой кошелек)\n"
+        "3. Выполни /setwallet снова\n\n"
+        "Created by @Russian0bit\n"
+        "Больше о Биткоине и финансах у меня на канале @Cryptobotan",
+        parse_mode=None
     )
 
 
@@ -2367,7 +2391,7 @@ async def cmd_history(message: Message):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT st.plan_id, st.order_id, st.network_key, st.amount, "
-            "COALESCE(st.transfer_tx_hash, st.approve_tx_hash, '') AS tx_hash, "
+            "COALESCE(co.btc_txid, '') AS btc_tx_hash, "
             "st.sent_at, co.completed_at "
             "FROM completed_orders co "
             "JOIN sent_transactions st ON st.order_id = co.order_id "
@@ -2386,20 +2410,28 @@ async def cmd_history(message: Message):
         return
 
     lines = ["📜 Последние завершённые операции:\n"]
-    for idx, (plan_id, order_id, network_key, amount, tx_hash, created_at, completed_at) in enumerate(rows, start=1):
+    for idx, (plan_id, order_id, network_key, amount, btc_tx_hash, created_at, completed_at) in enumerate(rows, start=1):
         created_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(created_at or 0)))
         completed_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(completed_at or 0)))
-        tx_short = f"{tx_hash[:12]}...{tx_hash[-8:]}" if tx_hash and len(tx_hash) > 24 else (tx_hash or "—")
+        normalized_network_key = str(network_key or "").upper()
+        if normalized_network_key == "USDT-MATIC":
+            normalized_network_key = "USDT-POLYGON"
+        safe_order_id = html.escape(str(order_id))
+        if btc_tx_hash:
+            safe_tx_hash = html.escape(str(btc_tx_hash))
+            tx_line = f'TX: <a href="https://blockchair.com/bitcoin/transaction/{safe_tx_hash}">TX ID</a>\n'
+        else:
+            tx_line = ""
         lines.append(
-            f"{idx}. Ордер `{order_id}`\n"
-            f"План: {plan_id} | Сеть: {network_key}\n"
-            f"Сумма: {float(amount):.6f} USDT\n"
-            f"TX: `{tx_short}`\n"
+            f'{idx}. Ордер <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
+            f"План: {plan_id} | Сеть: {normalized_network_key}\n"
+            f"Сумма: {float(amount):.2f} USDT\n"
+            f"{tx_line}"
             f"Создан: {created_str}\n"
             f"Завершён: {completed_str}\n"
         )
 
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @dp.message(Command("ping"))
@@ -2479,34 +2511,43 @@ async def cmd_networks(message: Message):
     try:
         await message.answer("⏳ Проверяю доступность сетей на FixedFloat...")
         
-        # Получаем список всех валют из FixedFloat
-        items = await ff_request_async("ccies", {})
-        
-        # Собираем доступные USDT сети
         available_networks = {}
-        for item in items:
-            if item.get("coin") == "USDT":
-                code = item.get("code")
-                network = item.get("network", "")
-                available_networks[code] = network
+        api_available = True
+        try:
+            # Получаем список всех валют из FixedFloat
+            items = await ff_request_async("ccies", {})
+            
+            # Собираем доступные USDT сети
+            for item in items:
+                if item.get("coin") == "USDT":
+                    code = item.get("code")
+                    network = item.get("network", "")
+                    available_networks[code] = network
+        except Exception as api_error:
+            api_available = False
+            logger.error(f"API FixedFloat недоступен в /networks: {api_error}")
         
         # Проверяем поддерживаемые ботом сети
         text = "🌐 Доступные сети USDT:\n\n"
         text += "Поддерживаемые ботом:\n"
         
         bot_supported = {
-            "USDT-ARB": "USDTARBITRUM",
-            "USDT-BSC": "USDTBSC",
-            "USDT-MATIC": "USDTMATIC"
+            "USDT-ARB": NETWORK_CODES.get("USDT-ARB", "USDTARBITRUM"),
+            "USDT-BSC": NETWORK_CODES.get("USDT-BSC", "USDTBSC"),
+            "USDT-POLYGON": NETWORK_CODES.get("USDT-POLYGON", "USDTPOLYGON"),
         }
         
         for bot_name, api_code in bot_supported.items():
-            if api_code in available_networks:
-                status = "✅"
-                network_name = available_networks[api_code]
+            if api_available:
+                if api_code in available_networks:
+                    status = "✅"
+                    network_name = available_networks[api_code]
+                else:
+                    status = "❌"
+                    network_name = "недоступна"
             else:
                 status = "❌"
-                network_name = "недоступна"
+                network_name = "unknown (API недоступно)"
             text += f"{status} {bot_name} - {network_name}\n"
         
         # Показываем другие доступные USDT сети
@@ -2522,7 +2563,10 @@ async def cmd_networks(message: Message):
         else:
             text += "Нет других доступных сетей"
         
-        text += "\n\n💡 Данные обновлены в реальном времени"
+        if api_available:
+            text += "\n\n💡 Данные обновлены в реальном времени"
+        else:
+            text += "\n\n⚠️ API недоступен, показан локальный fallback (unknown)"
         
         await message.answer(text)
         
@@ -2621,7 +2665,7 @@ async def cmd_execute(message: Message):
             inflight_row = await inflight_cur.fetchone()
     if inflight_row:
         inflight_order_id, inflight_state = inflight_row
-        inflight_status = await get_fixedfloat_order_status(inflight_order_id)
+        inflight_status = await get_fixedfloat_order_status_with_retry(inflight_order_id)
         if inflight_status in SUCCESS_FIXEDFLOAT_ORDER_STATUSES:
             await mark_order_completed(plan_id, inflight_order_id, f"fixedfloat_{inflight_status}")
             active_order_id = None
@@ -2645,7 +2689,7 @@ async def cmd_execute(message: Message):
     # Проверяем есть ли уже активный ордер для ЭТОГО конкретного плана
     now = int(time.time())
     if active_order_id:
-        ff_order_status = await get_fixedfloat_order_status(active_order_id)
+        ff_order_status = await get_fixedfloat_order_status_with_retry(active_order_id)
         if ff_order_status in SUCCESS_FIXEDFLOAT_ORDER_STATUSES:
             await mark_order_completed(plan_id, active_order_id, f"fixedfloat_{ff_order_status}")
             active_order_id = None
@@ -2971,12 +3015,8 @@ async def cmd_execute(message: Message):
                 )
                 await db.commit()
             
-            await message.answer(
-                f"✅ Ордер создан!\n\n"
-                f"🆔 ID: {order_id}\n"
-                f"🔗 Ссылка: {order_url}\n\n"
-                f"⏳ Автоматически отправляю USDT..."
-            )
+            progress_msg = await message.answer("⏳ Выполняю ордер...")
+            track_order_progress_message(str(order_id), int(user_id), int(progress_msg.message_id))
             
             if not await claim_auto_send_execution(plan_id, order_id):
                 return
@@ -3005,7 +3045,6 @@ async def cmd_execute(message: Message):
             
             if success:
                 # Сохраняем информацию о транзакции
-                config = get_network_config(from_asset)
                 async with aiosqlite.connect(DB_PATH) as db:
                     await db.execute(
                         "UPDATE sent_transactions SET approve_tx_hash = ?, transfer_tx_hash = ?, state = 'sent' "
@@ -3014,28 +3053,20 @@ async def cmd_execute(message: Message):
                     )
                     await db.commit()
                 
-                explorer_base = config["explorer_base"]
-                transfer_url = f"{explorer_base}{transfer_tx}" if transfer_tx else None
+                safe_order_id = html.escape(str(order_id))
                 
                 msg = (
                     f"✅ USDT отправлен автоматически!\n\n"
-                    f"🆔 Ордер: {order_id}\n"
-                    f"🔗 Ссылка: {order_url}\n\n"
-                    f"💵 Отправлено: {required_amount:.6f} USDT\n"
+                    f'🆔 Ордер: <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
+                    f"\n"
+                    f"💵 Отправлено: {required_amount:.2f} USDT\n"
                     f"📍 На адрес: {deposit_address[:10]}...{deposit_address[-6:]}\n\n"
                 )
-                
-                if approve_tx:
-                    approve_url = f"{explorer_base}{approve_tx}"
-                    msg += f"✅ Approve: {approve_url}\n"
-                
-                if transfer_url:
-                    msg += f"✅ Transfer: {transfer_url}\n"
                 
                 if DRY_RUN:
                     msg += f"\n⚠️ DRY RUN MODE - транзакции не были отправлены"
                 
-                await message.answer(msg)
+                await update_order_progress_message(int(user_id), str(order_id), msg)
                 
                 logger.info(f"Auto-send successful: order_id={order_id}, approve_tx={approve_tx}, transfer_tx={transfer_tx}")
             else:
@@ -3072,7 +3103,6 @@ async def cmd_execute(message: Message):
                     await message.answer(
                         f"⚠️ Транзакция отправлена, но подтверждение ещё не получено\n\n"
                         f"🆔 Ордер: {order_id}\n"
-                        f"🔗 TX: {pending_tx_hash}\n\n"
                         f"Новый ордер не будет создан, пока статус TX не определится."
                     )
                     return
@@ -3081,7 +3111,6 @@ async def cmd_execute(message: Message):
                     await message.answer(
                         f"⚠️ Транзакция отправлена, но подтверждение ещё не получено\n\n"
                         f"🆔 Ордер: {order_id}\n"
-                        f"🔗 TX: {pending_tx_hash}\n\n"
                         f"Новый ордер не будет создан, пока статус TX не определится."
                     )
                     return
@@ -3676,8 +3705,8 @@ async def cmd_walletstatus(message: Message):
             status_text += (
                 f"━━━━━━━━━━━━━━\n"
                 f"🌐 {config['name']}\n"
-                f"💵 USDT: {usdt_balance:.6f}\n"
-                f"⛽ {config['native_token']}: {native_balance:.6f}\n\n"
+                f"💵 USDT: {usdt_balance:.2f}\n"
+                f"⛽ {config['native_token']}: {native_balance:.2f}\n\n"
             )
         except Exception as e:
             logger.error(f"Error getting balance for {network_key}: {e}")
@@ -3746,7 +3775,7 @@ async def cmd_setdca(message: Message):
     Формат: /setdca СЕТЬ СУММА ИНТЕРВАЛ BTC_АДРЕС
     
     Параметры:
-    - СЕТЬ: USDT-ARB, USDT-BSC, USDT-MATIC
+    - СЕТЬ: USDT-ARB, USDT-BSC, USDT-POLYGON
     - СУММА: 10-500 USD
     - ИНТЕРВАЛ: 12, 24, 168, 720 (часов)
     - BTC_АДРЕС: валидный Bitcoin адрес
@@ -3760,7 +3789,8 @@ async def cmd_setdca(message: Message):
             "/setdca СЕТЬ СУММА ИНТЕРВАЛ BTC_АДРЕС\n\n"
             "Примеры:\n"
             "/setdca USDT-ARB 50 24 bc1qxy2...\n"
-            "/setdca USDT-BSC 100 168 bc1qxy2...\n\n"
+            "/setdca USDT-BSC 100 168 bc1qxy2...\n"
+            "/setdca USDT-POLYGON 75 24 bc1qxy2...\n\n"
             "Интервалы:\n"
             "12 - раз в 12 часов\n"
             "24 - раз в день\n"
@@ -4029,7 +4059,7 @@ async def order_monitor():
                     active_orders = await active_cur.fetchall()
 
             for plan_id, order_id, active_order_expires in active_orders:
-                status = await get_fixedfloat_order_status(order_id)
+                status = await get_fixedfloat_order_status_with_retry(order_id)
                 if status in SUCCESS_FIXEDFLOAT_ORDER_STATUSES:
                     await mark_order_completed(plan_id, order_id, f"fixedfloat_{status}")
                     continue
@@ -4038,11 +4068,8 @@ async def order_monitor():
                     await mark_order_failed(plan_id, order_id, f"FixedFloat order {status}")
                     continue
                 if status == "":
-                    fallback_result = await finalize_expired_unavailable_order(plan_id, order_id, active_order_expires, now)
-                    if fallback_result == "completed":
-                        logger.info("Order %s closed by fallback (status API unavailable, tx confirmed)", order_id)
-                    elif fallback_result == "failed":
-                        logger.info("Order %s closed as failed by fallback (status API unavailable)", order_id)
+                    logger.info("Order %s status unavailable after retries; keeping order active", order_id)
+                    continue
             
             async with aiosqlite.connect(DB_PATH) as db:
                 # Получаем все отправленные ордера без history-записи
@@ -4052,7 +4079,7 @@ async def order_monitor():
                     "FROM sent_transactions st "
                     "JOIN dca_plans dp ON st.plan_id = dp.id "
                     "LEFT JOIN completed_orders co ON st.order_id = co.order_id "
-                    "WHERE co.order_id IS NULL AND st.transfer_tx_hash IS NOT NULL "
+                    "WHERE (co.order_id IS NULL OR co.notified = 0) AND st.transfer_tx_hash IS NOT NULL "
                     "AND st.id = ("
                     "  SELECT st2.id FROM sent_transactions st2 "
                     "  WHERE st2.order_id = st.order_id ORDER BY st2.sent_at DESC LIMIT 1"
@@ -4062,35 +4089,40 @@ async def order_monitor():
             
             for order_id, user_id, plan_id, network_key, amount, transfer_tx_hash, sent_at, btc_address, active_order_expires in orders_to_check:
                 try:
-                    status = await get_fixedfloat_order_status(order_id)
+                    status = await get_fixedfloat_order_status_with_retry(order_id)
                     if status in SUCCESS_FIXEDFLOAT_ORDER_STATUSES:
                         await mark_order_completed(plan_id, order_id, f"fixedfloat_{status}")
-                        blockchair_url = f"https://blockchair.com/bitcoin/address/{btc_address}"
-                        await bot.send_message(
-                            user_id,
-                            f"✅ Ордер {order_id} обработан FixedFloat!\n\n"
-                            f"🌐 Сеть: {network_key}\n"
-                            f"💵 Сумма: {float(amount):.6f} USDT\n"
-                            f"🔗 TX отправки: {transfer_tx_hash}\n\n"
-                            f"🎯 BTC адрес:\n{btc_address}\n"
-                            f"🔎 Проверка BTC:\n{blockchair_url}"
-                        )
+                        btc_txid = await fetch_btc_txid(order_id)
+                        safe_order_id = html.escape(str(order_id))
+                        if btc_txid:
+                            safe_btc_txid = html.escape(str(btc_txid))
+                            completion_text = (
+                                f'✅ Ордер завершён\n\n'
+                                f'Ордер <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
+                                f"💵 Сумма: {float(amount):.2f} USDT\n"
+                                f"🎯 BTC адрес:\n{btc_address}\n\n"
+                                f'TX: <a href="https://blockchair.com/bitcoin/transaction/{safe_btc_txid}">TX ID</a>'
+                            )
+                            await update_order_progress_message(int(user_id), str(order_id), completion_text)
+                            async with aiosqlite.connect(DB_PATH) as ndb:
+                                await ndb.execute("UPDATE completed_orders SET notified = 1 WHERE order_id = ?", (order_id,))
+                                await ndb.commit()
+                            _order_progress_messages.pop(str(order_id), None)
+                        else:
+                            logger.info("Waiting for BTC TX for order %s", order_id)
+                            waiting_text = (
+                                f'⏳ Ордер выполнен, ожидаем BTC транзакцию...\n\n'
+                                f'Ордер <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
+                                f"💵 Сумма: {float(amount):.2f} USDT\n"
+                                f"🎯 BTC адрес:\n{btc_address}"
+                            )
+                            await update_order_progress_message(int(user_id), str(order_id), waiting_text)
                         logger.info(f"Order {order_id} marked as completed for user {user_id}")
                     elif status in FINAL_FIXEDFLOAT_ORDER_STATUSES:
                         await mark_order_failed(plan_id, order_id, f"FixedFloat order {status}")
                     elif status == "":
-                        fallback_result = await finalize_expired_unavailable_order(plan_id, order_id, active_order_expires, now)
-                        if fallback_result == "completed":
-                            blockchair_url = f"https://blockchair.com/bitcoin/address/{btc_address}"
-                            await bot.send_message(
-                                user_id,
-                                f"✅ Ордер {order_id} завершён (fallback по подтверждённой TX).\n\n"
-                                f"🌐 Сеть: {network_key}\n"
-                                f"💵 Сумма: {float(amount):.6f} USDT\n"
-                                f"🔗 TX отправки: {transfer_tx_hash}\n\n"
-                                f"🎯 BTC адрес:\n{btc_address}\n"
-                                f"🔎 Проверка BTC:\n{blockchair_url}"
-                            )
+                        logger.info("Order %s status unavailable after retries; keeping order active", order_id)
+                        continue
                 
                 except Exception as e:
                     logger.error(f"Error checking order {order_id}: {e}")

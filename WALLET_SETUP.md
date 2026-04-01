@@ -122,7 +122,7 @@ When bot restarts:
 ### Supported Networks
 - USDT-ARB (Arbitrum)
 - USDT-BSC (Binance Smart Chain)
-- USDT-MATIC (Polygon)
+- USDT-POLYGON (Polygon)
 
 Same wallet address on all networks!
 

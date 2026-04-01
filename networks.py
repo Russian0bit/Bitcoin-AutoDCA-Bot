@@ -31,11 +31,11 @@ NETWORKS_MAINNET = {
         "blockchair_base": "https://blockchair.com/bitcoin/transaction",
         "explorer_base": "https://bscscan.com/tx/",
     },
-    "USDT-MATIC": {
+    "USDT-POLYGON": {
         "name": "Polygon",
         "rpc_url": "https://polygon-rpc.com/",
         "chain_id": 137,
-        "native_token": "MATIC",
+        "native_token": "POLYGON",
         "usdt_contract": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",  # USDT on Polygon
         "blockchair_base": "https://blockchair.com/bitcoin/transaction",
         "explorer_base": "https://polygonscan.com/tx/",
@@ -62,11 +62,11 @@ NETWORKS_TESTNET = {
         "blockchair_base": "https://blockchair.com/bitcoin/testnet/transaction",
         "explorer_base": "https://testnet.bscscan.com/tx/",
     },
-    "USDT-MATIC": {
+    "USDT-POLYGON": {
         "name": "Polygon Mumbai",
         "rpc_url": "https://rpc-mumbai.maticvigil.com/",
         "chain_id": 80001,
-        "native_token": "MATIC",
+        "native_token": "POLYGON",
         "usdt_contract": "0x0000000000000000000000000000000000000000",  # Mock/test contract
         "blockchair_base": "https://blockchair.com/bitcoin/testnet/transaction",
         "explorer_base": "https://mumbai.polygonscan.com/tx/",
@@ -90,7 +90,10 @@ def get_network_config(network_key: str) -> dict:
     Raises:
         ValueError: If network is not supported
     """
-    config = NETWORKS.get(network_key)
+    normalized_key = (network_key or "").upper()
+    if normalized_key == "USDT-MATIC":
+        normalized_key = "USDT-POLYGON"
+    config = NETWORKS.get(normalized_key)
     if not config:
         raise ValueError(f"Unsupported network: {network_key}. Supported: {list(NETWORKS.keys())}")
     return config

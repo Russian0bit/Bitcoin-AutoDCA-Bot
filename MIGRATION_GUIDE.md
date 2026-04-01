@@ -7,7 +7,7 @@ The bot has been updated from **network-specific wallets** to a **single EVM wal
 ## What Changed
 
 ### Before (Old Model)
-- Separate wallet for each network (USDT-ARB, USDT-BSC, USDT-MATIC)
+- Separate wallet for each network (USDT-ARB, USDT-BSC, USDT-POLYGON)
 - Command: `/setwallet NETWORK /path/to/keystore.json PASSWORD`
 - Password stored in memory only (lost on restart)
 - Network-specific keystore files

@@ -1,6 +1,6 @@
 # BTC_AutoDCA_Bot
 
-Telegram-бот для DCA-покупки Bitcoin (BTC) через FixedFloat.
+Telegram-бот для DCA-покупки Bitcoin (BTC) через DEX FixedFloat.
 
 Бот поддерживает два режима:
 - **Manual mode** — пользователь отправляет USDT вручную.
@@ -83,13 +83,13 @@ DCA_TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 ADMIN_USER_ID=123456789
 
 # FixedFloat API
-FIXEDFLOAT_API_KEY=your_fixedfloat_api_key
-FIXEDFLOAT_API_SECRET=your_fixedfloat_api_secret
+FF_API_KEY=your_fixedfloat_api_key
+FF_API_SECRET=your_fixedfloat_api_secret
 ```
 
 ### 4) Настройка кошелька
 
-Создайте файл `wallet.json` в корне проекта:
+Создайте текстовый файл `wallet.txt` в папке с ботом. Укажите там данные:
 
 ```json
 {
@@ -97,6 +97,7 @@ FIXEDFLOAT_API_SECRET=your_fixedfloat_api_secret
   "password": "YOUR_PASSWORD"
 }
 ```
+Затем переименуйте файл в `wallet.json`
 
 После этого в Telegram выполните:
 
@@ -133,7 +134,7 @@ python bot.py
 Для автоотправки USDT на кошельке должен быть газ:
 - **Arbitrum** → ETH
 - **BSC** → BNB
-- **Polygon** → MATIC
+- **Polygon** → POLYGON
 
 ## 📖 Commands
 

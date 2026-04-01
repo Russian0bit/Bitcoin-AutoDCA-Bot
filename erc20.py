@@ -138,7 +138,7 @@ def _inject_poa_middleware_if_needed(w3: Web3, network_name: str, expected_chain
 def _build_rpc_candidates(network_key: str, primary_rpc: str, chain_id: int) -> list[str]:
     """Build ordered list of RPC endpoints with per-network fallbacks."""
     rpc_candidates = [primary_rpc]
-    if network_key == "USDT-MATIC" and int(chain_id) == 137:
+    if network_key == "USDT-POLYGON" and int(chain_id) == 137:
         for rpc_url in POLYGON_RPC_URLS:
             if rpc_url not in rpc_candidates:
                 rpc_candidates.append(rpc_url)
@@ -362,14 +362,14 @@ def get_usdt_balance(w3: Web3, network_key: str, address: str) -> float:
 
 def get_native_balance(w3: Web3, address: str) -> float:
     """
-    Get native token balance (ETH/BNB/MATIC).
+    Get native token balance (ETH/BNB/POLYGON).
     
     Args:
         w3: Web3 instance
         address: Wallet address
     
     Returns:
-        Native token balance in ETH/BNB/MATIC
+        Native token balance in ETH/BNB/POLYGON
     """
     try:
         balance_wei = w3.eth.get_balance(Web3.to_checksum_address(address))

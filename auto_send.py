@@ -226,11 +226,14 @@ async def auto_send_usdt(
                 # Need to approve
                 logger.info(f"Step 1: Approving {required_amount:.6f} USDT to {masked_deposit}")
                 try:
-                    approve_tx_hash = await asyncio.to_thread(
-                        approve_usdt,
-                        w3, network_key, private_key,
-                        deposit_address_checksum, required_amount, dry_run
-                    )
+                    if approve_tx_hash:
+                        logger.info(f"Approve tx already exists, skip new approve: {approve_tx_hash}")
+                    else:
+                        approve_tx_hash = await asyncio.to_thread(
+                            approve_usdt,
+                            w3, network_key, private_key,
+                            deposit_address_checksum, required_amount, dry_run
+                        )
                     
                     if dry_run:
                         logger.info(f"[DRY RUN] Approve step completed (no transaction sent)")
@@ -259,11 +262,14 @@ async def auto_send_usdt(
             # Transfer USDT
             logger.info(f"Step 2: Transferring {required_amount:.6f} USDT to {masked_deposit}")
             try:
-                transfer_tx_hash = await asyncio.to_thread(
-                    transfer_usdt,
-                    w3, network_key, private_key,
-                    deposit_address_checksum, required_amount, dry_run
-                )
+                if transfer_tx_hash:
+                    logger.info(f"Transfer tx already exists, skip new transfer: {transfer_tx_hash}")
+                else:
+                    transfer_tx_hash = await asyncio.to_thread(
+                        transfer_usdt,
+                        w3, network_key, private_key,
+                        deposit_address_checksum, required_amount, dry_run
+                    )
                 
                 if dry_run:
                     logger.info(f"[DRY RUN] Transfer step completed (no transaction sent)")
