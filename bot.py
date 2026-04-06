@@ -37,6 +37,8 @@ except ModuleNotFoundError as exc:
 
 try:
     from aiogram import Bot, Dispatcher, BaseMiddleware
+    from aiogram.client.default import DefaultBotProperties
+    from aiogram.enums import ParseMode
     from aiogram.filters import Command
     from aiogram.types import CallbackQuery, Message
     from aiogram.fsm.storage.memory import MemoryStorage
@@ -244,6 +246,13 @@ def format_interval(hours: int) -> str:
         return f"{hours}ч"
 
 
+def escape_html(text: str) -> str:
+    import html
+    if text is None:
+        return ""
+    return html.escape(str(text)) if text else text
+
+
 def format_balance(value: float) -> str:
     if value is None:
         return "—"
@@ -258,6 +267,87 @@ def format_balance(value: float) -> str:
     if value < 1:
         return f"{value:.4f}"
     return f"{value:.2f}"
+
+
+def short_address(addr: str) -> str:
+    if not addr:
+        return addr
+    value = str(addr)
+    if len(value) < 10:
+        return escape_html(value)
+    return f"{escape_html(value[:6])}...{escape_html(value[-4:])}"
+
+
+def format_amount(x: float) -> str:
+    if x is None:
+        return "0"
+    value = float(x)
+    if value >= 1:
+        return f"{value:.2f}"
+    formatted = f"{value:.8f}".rstrip("0").rstrip(".")
+    return formatted if formatted else "0"
+
+
+def normalize_network_key(value: str) -> str:
+    normalized = str(value or "").upper()
+    if normalized == "USDT-MATIC":
+        return "USDT-POLYGON"
+    return normalized
+
+
+def get_network_label(value: str) -> str:
+    normalized_value = normalize_network_key(value)
+    code_to_label = {
+        "USDTARB": "Arbitrum",
+        "USDTARBITRUM": "Arbitrum",
+        "USDT-BSC": "BSC",
+        "USDTBSC": "BSC",
+        "USDT-POLYGON": "Polygon",
+        "USDTMATIC": "Polygon",
+        "USDTPOLYGON": "Polygon",
+    }
+    if normalized_value in code_to_label:
+        return code_to_label[normalized_value]
+    try:
+        return get_network_config(normalized_value)["name"]
+    except Exception:
+        return ""
+
+
+def format_order_amount(amount: Any, token: str = "USDT", network: str = "", network_key: str = "") -> str:
+    amount_raw = amount
+    token_raw = token
+    if not token_raw and isinstance(amount, str):
+        parts = str(amount).strip().split()
+        if len(parts) >= 2:
+            amount_raw = parts[0]
+            token_raw = parts[1]
+    elif token_raw == "USDT" and isinstance(amount, str):
+        parts = str(amount).strip().split()
+        if len(parts) >= 2:
+            amount_raw = parts[0]
+            token_raw = parts[1]
+    try:
+        amount_number = float(amount_raw)
+    except (TypeError, ValueError):
+        return escape_html(amount)
+
+    amount_text = format_amount(amount_number)
+    network_label = get_network_label(network) or get_network_label(network_key) or get_network_label(token_raw)
+    token_normalized = normalize_network_key(str(token_raw or "").upper())
+    token_display = "USDT" if token_normalized.startswith("USDT") else (token_raw or "USDT")
+    safe_network_label = escape_html(network_label) if network_label else ""
+    safe_token = escape_html(token_display)
+    if network_label:
+        return f"{amount_text} {safe_token} ({safe_network_label})"
+    if token_display:
+        return f"{amount_text} {safe_token}"
+    return amount_text
+
+
+def format_order_link(order_id: Any) -> str:
+    safe_order_id = escape_html(order_id)
+    return f'<a href="https://fixedfloat.com/order/{safe_order_id}">{safe_order_id}</a>'
 
 
 def normalize_code(value: str) -> str:
@@ -370,7 +460,6 @@ def humanize_auto_send_error(error_msg: str, network_key: str) -> str:
 
 def build_auto_send_failed_notification(
     order_id: str,
-    order_url: str,
     network_key: str,
     required_amount: float,
     deposit_address: str,
@@ -378,18 +467,19 @@ def build_auto_send_failed_notification(
     error_msg: str,
 ) -> str:
     """Build clear fallback message when auto-send fails."""
-    human_error = humanize_auto_send_error(error_msg, network_key)
+    human_error = escape_html(humanize_auto_send_error(error_msg, network_key))
+    network_label = escape_html(get_network_label(network_key) or network_key)
+    safe_time_text = escape_html(time_text)
     return (
         "❌ Не удалось автоматически отправить USDT\n\n"
-        f"🆔 Ордер: {order_id}\n"
-        f"🌐 Сеть: {network_key}\n"
-        f"🔗 Ссылка: {order_url}\n\n"
+        f"🔗 Ордер: {format_order_link(order_id)}\n"
+        f"🌐 Сеть: {network_label}\n\n"
         f"Причина:\n{human_error}\n\n"
         "💵 Отправить вручную:\n"
-        f"{required_amount:.2f} USDT\n"
+        f"{format_order_amount(required_amount, network_key=network_key)}\n"
         "📍 На адрес:\n"
-        f"{deposit_address}\n\n"
-        f"⏰ Ордер действителен: {time_text}"
+        f"{short_address(deposit_address)}\n\n"
+        f"⏰ Ордер действителен: {safe_time_text}"
     )
 
 
@@ -722,6 +812,7 @@ def track_order_progress_message(order_id: str, user_id: int, message_id: int) -
 
 async def update_order_progress_message(user_id: int, order_id: str, text: str) -> None:
     """Try edit existing progress message, fallback to sending a new one."""
+    has_order_link = "fixedfloat.com/order/" in str(text or "")
     msg_meta = _order_progress_messages.get(str(order_id))
     if msg_meta and msg_meta[0] == int(user_id):
         try:
@@ -730,12 +821,18 @@ async def update_order_progress_message(user_id: int, order_id: str, text: str) 
                 message_id=msg_meta[1],
                 text=text,
                 parse_mode="HTML",
+                disable_web_page_preview=has_order_link,
             )
             return
         except Exception as e:
             logger.warning("Failed to edit progress message for order %s: %s", order_id, e)
     try:
-        sent_msg = await bot.send_message(int(user_id), text, parse_mode="HTML")
+        sent_msg = await bot.send_message(
+            int(user_id),
+            text,
+            parse_mode="HTML",
+            disable_web_page_preview=has_order_link,
+        )
         track_order_progress_message(str(order_id), int(user_id), int(sent_msg.message_id))
     except Exception as e:
         logger.error("Failed to send progress message for order %s: %s", order_id, e)
@@ -1420,7 +1517,10 @@ BOT_TOKEN = os.getenv("DCA_TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("DCA_TELEGRAM_BOT_TOKEN is not set")
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
 dp = Dispatcher(storage=MemoryStorage())
 dp.update.middleware(AccessControlMiddleware())
 DB_PATH = resolve_project_path(os.getenv("DATABASE_PATH", ""), DEFAULT_DB_PATH)
@@ -2003,9 +2103,6 @@ async def dca_scheduler():
                         minutes = (time_left % 3600) // 60
                         time_text = f"{hours}ч {minutes}мин" if hours > 0 else f"{minutes}мин"
                         
-                        # Формируем ссылку на ордер
-                        order_url = f"https://fixedfloat.com/order/{order_id}"
-                        
                         # ВАЖНО: Сохраняем активный ордер в БД для предотвращения дубликатов
                         await db.execute(
                             "UPDATE dca_plans SET active_order_id = ?, active_order_address = ?, "
@@ -2090,11 +2187,13 @@ async def dca_scheduler():
                                     await bot.send_message(
                                         user_id,
                                         f"⚠️ Временная ошибка сети, выполнение отложено\n\n"
-                                        f"🆔 Ордер: {order_id}\n"
-                                        f"🌐 Сеть: {from_asset}\n"
-                                        f"Причина: {human_error}\n\n"
+                                        f"🔗 Ордер: {format_order_link(order_id)}\n"
+                                        f"🌐 Сеть: {escape_html(from_asset)}\n"
+                                        f"Причина: {escape_html(human_error)}\n\n"
                                         f"Повтор запланирован на следующий интервал ({interval_hours}ч).\n"
-                                        f"Можно запустить вручную командой /execute."
+                                        f"Можно запустить вручную командой /execute.",
+                                        parse_mode="HTML",
+                                        disable_web_page_preview=True,
                                     )
                                     # DO NOT advance schedule - will retry
                                     continue
@@ -2121,13 +2220,14 @@ async def dca_scheduler():
                                         user_id,
                                         build_auto_send_failed_notification(
                                             order_id=order_id,
-                                            order_url=order_url,
                                             network_key=from_asset,
                                             required_amount=required_amount,
                                             deposit_address=deposit_address,
                                             time_text=time_text,
                                             error_msg=error_str,
-                                        )
+                                        ),
+                                        parse_mode="HTML",
+                                        disable_web_page_preview=True,
                                     )
                                     # Advance schedule for failed transactions
                                     new_next_run = now + (interval_hours * 3600)
@@ -2146,14 +2246,12 @@ async def dca_scheduler():
                                 )
                                 await db.commit()
                                 
-                                safe_order_id = html.escape(str(order_id))
-                                
                                 msg = (
                                     f"✅ USDT sent automatically!\n\n"
-                                    f'🆔 Order: <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
+                                    f"🔗 Ордер: {format_order_link(order_id)}\n"
                                     f"\n"
-                                    f"💵 Sent: {required_amount:.2f} USDT\n"
-                                    f"📍 To: {deposit_address[:10]}...{deposit_address[-6:]}\n\n"
+                                    f"💵 Sent: {format_order_amount(required_amount, network_key=from_asset)}\n"
+                                    f"📍 To: {short_address(deposit_address)}\n\n"
                                 )
                                 
                                 if DRY_RUN:
@@ -2185,9 +2283,11 @@ async def dca_scheduler():
                                     await bot.send_message(
                                         user_id,
                                         f"⚠️ Транзакция отправлена, но ещё не подтверждена сетью\n\n"
-                                        f"🆔 Ордер: {order_id}\n"
-                                        f"🌐 Сеть: {from_asset}\n"
-                                        f"Новый ордер не будет создан, пока статус TX не определится."
+                                        f"🔗 Ордер: {format_order_link(order_id)}\n"
+                                        f"🌐 Сеть: {escape_html(from_asset)}\n"
+                                        f"Новый ордер не будет создан, пока статус TX не определится.",
+                                        parse_mode="HTML",
+                                        disable_web_page_preview=True,
                                     )
                                     continue
                                 
@@ -2203,9 +2303,11 @@ async def dca_scheduler():
                                         await bot.send_message(
                                             user_id,
                                             f"⚠️ Транзакция отправлена, но подтверждение ещё не получено\n\n"
-                                            f"🆔 Ордер: {order_id}\n"
-                                            f"🌐 Сеть: {from_asset}\n"
-                                            f"Новый ордер не будет создан, пока статус TX не определится."
+                                            f"🔗 Ордер: {format_order_link(order_id)}\n"
+                                            f"🌐 Сеть: {escape_html(from_asset)}\n"
+                                            f"Новый ордер не будет создан, пока статус TX не определится.",
+                                            parse_mode="HTML",
+                                            disable_web_page_preview=True,
                                         )
                                     else:
                                         # No tx hash available; keep blocked for manual/scheduler retry policy
@@ -2217,11 +2319,13 @@ async def dca_scheduler():
                                         await bot.send_message(
                                             user_id,
                                             f"⚠️ Временная ошибка сети, выполнение отложено\n\n"
-                                            f"🆔 Ордер: {order_id}\n"
-                                            f"🌐 Сеть: {from_asset}\n"
-                                            f"Причина: {human_error}\n\n"
+                                            f"🔗 Ордер: {format_order_link(order_id)}\n"
+                                            f"🌐 Сеть: {escape_html(from_asset)}\n"
+                                            f"Причина: {escape_html(human_error)}\n\n"
                                             f"Повтор запланирован на следующий интервал ({interval_hours}ч).\n"
-                                            f"Можно запустить вручную командой /execute."
+                                            f"Можно запустить вручную командой /execute.",
+                                            parse_mode="HTML",
+                                            disable_web_page_preview=True,
                                         )
                                     continue
                                 else:
@@ -2245,14 +2349,18 @@ async def dca_scheduler():
                                     
                                     error_notification = build_auto_send_failed_notification(
                                         order_id=order_id,
-                                        order_url=order_url,
                                         network_key=from_asset,
                                         required_amount=required_amount,
                                         deposit_address=deposit_address,
                                         time_text=time_text,
                                         error_msg=error_msg,
                                     )
-                                    await bot.send_message(user_id, error_notification)
+                                    await bot.send_message(
+                                        user_id,
+                                        error_notification,
+                                        parse_mode="HTML",
+                                        disable_web_page_preview=True,
+                                    )
                                     logger.error(f"Auto-send failed for order {order_id}: {error_msg}")
                                     
                                     # Advance schedule ONLY for failed (non-retryable) errors
@@ -2277,13 +2385,14 @@ async def dca_scheduler():
                             await bot.send_message(
                                 user_id,
                                 f"✅ DCA plan executed!\n\n"
-                                f"🆔 Order: {order_id}\n"
-                                f"🔗 Link: {order_url}\n\n"
-                                f"💵 Send: {deposit_amount} {deposit_code}\n"
-                                f"📍 Deposit address:\n{deposit_address}\n\n"
+                                f"🔗 Ордер: {format_order_link(order_id)}\n\n"
+                                f"💵 Send: {format_order_amount(deposit_amount, deposit_code, from_asset)}\n"
+                                f"📍 Deposit address:\n{short_address(deposit_address)}\n\n"
                                 f"⏰ Order valid for: {time_text}\n\n"
                                 f"💡 For auto-send, setup wallet:\n"
-                                f"/setwallet"
+                                f"/setwallet",
+                                parse_mode="HTML",
+                                disable_web_page_preview=True,
                             )
                             # Advance schedule for manual send case (order created, user notified)
                             new_next_run = now + (interval_hours * 3600)
@@ -2303,9 +2412,9 @@ async def dca_scheduler():
                         try:
                             await bot.send_message(
                                 user_id,
-                                f"❌ Ошибка выполнения DCA плана:\n`{str(e)}`\n\n"
+                                f"❌ Ошибка выполнения DCA плана:\n{escape_html(e)}\n\n"
                                 f"План будет повторён через {interval_hours}ч",
-                                parse_mode="Markdown"
+                                parse_mode=None,
                             )
                         except:
                             pass
@@ -2437,25 +2546,27 @@ async def cmd_history(message: Message):
     for idx, (plan_id, order_id, network_key, amount, btc_tx_hash, created_at, completed_at) in enumerate(rows, start=1):
         created_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(created_at or 0)))
         completed_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(completed_at or 0)))
-        normalized_network_key = str(network_key or "").upper()
-        if normalized_network_key == "USDT-MATIC":
-            normalized_network_key = "USDT-POLYGON"
-        safe_order_id = html.escape(str(order_id))
+        normalized_network_key = normalize_network_key(str(network_key or ""))
+        network_label = get_network_label(normalized_network_key) or normalized_network_key
         if btc_tx_hash:
             safe_tx_hash = html.escape(str(btc_tx_hash))
             tx_line = f'TX: <a href="https://blockchair.com/bitcoin/transaction/{safe_tx_hash}">TX ID</a>\n'
         else:
             tx_line = ""
         lines.append(
-            f'{idx}. Ордер <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
-            f"План: {plan_id} | Сеть: {normalized_network_key}\n"
-            f"Сумма: {float(amount):.2f} USDT\n"
+            f"{idx}. 🔗 Ордер: {format_order_link(order_id)}\n"
+            f"План: {plan_id} | Сеть: {network_label}\n"
+            f"Сумма: {format_order_amount(amount, network_key=normalized_network_key)}\n"
             f"{tx_line}"
             f"Создан: {created_str}\n"
             f"Завершён: {completed_str}\n"
         )
 
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.answer(
+        "\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 @dp.message(Command("ping"))
@@ -2519,11 +2630,11 @@ async def cmd_limits(message: Message):
         
         limits_text += "💡 Лимиты обновляются в реальном времени"
         
-        await message.answer(limits_text)
+        await message.answer(limits_text, parse_mode=None)
         
     except Exception as e:
         logger.error(f"Ошибка получения лимитов: {e}")
-        await message.answer(f"❌ Ошибка получения лимитов: {e}")
+        await message.answer(f"❌ Ошибка получения лимитов: {escape_html(e)}")
 
 
 @dp.message(Command("networks"))
@@ -2622,11 +2733,11 @@ async def cmd_networks(message: Message):
         else:
             text += "\n\n⚠️ API недоступен, показан локальный fallback (unknown)"
         
-        await message.answer(text)
+        await message.answer(text, parse_mode=None)
         
     except Exception as e:
         logger.error(f"Ошибка получения списка сетей: {e}")
-        await message.answer(f"❌ Ошибка получения списка сетей: {e}")
+        await message.answer(f"❌ Ошибка получения списка сетей: {escape_html(e)}")
 
 
 @dp.message(lambda message: message.text and message.text.startswith("/execute"))
@@ -2680,7 +2791,7 @@ async def cmd_execute(message: Message):
             text = "📋 Выбери план для выполнения:\n\n"
             for idx, p in enumerate(plans, start=1):
                 interval_text = format_interval(p[3])
-                text += f"• /execute_{idx} - {p[1]}, {p[2]}$, раз в {interval_text}\n"
+                text += f"• /execute_{idx} - {get_network_label(p[1]) or p[1]}, {format_amount(float(p[2]))} USDT, раз в {interval_text}\n"
             await message.answer(text)
             return
     
@@ -2735,8 +2846,10 @@ async def cmd_execute(message: Message):
             active_order_expires = None
         else:
             await message.answer(
-                f"⚠️ Для плана уже есть незавершённая транзакция ({inflight_state}) по ордеру {inflight_order_id}.\n"
-                "Новый ордер заблокирован до определения статуса."
+                f"⚠️ Для плана уже есть незавершённая транзакция ({inflight_state}) по ордеру {format_order_link(inflight_order_id)}.\n"
+                "Новый ордер заблокирован до определения статуса.",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
             return
 
@@ -2783,7 +2896,11 @@ async def cmd_execute(message: Message):
                     )
                     await db.commit()
                 if claim_cur.rowcount != 1:
-                    await message.answer(f"⚠️ Transfer по ордеру {active_order_id} уже выполняется другим процессом.")
+                    await message.answer(
+                        f"⚠️ Transfer по ордеру {format_order_link(active_order_id)} уже выполняется другим процессом.",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
                     return
                 resume_state, resume_approve_tx, resume_transfer_tx, resume_error = await resume_transfer_after_approve(
                     network_key=from_asset,
@@ -2811,13 +2928,25 @@ async def cmd_execute(message: Message):
                         )
                     await db.commit()
                 if resume_state == "confirmed":
-                    await message.answer(f"✅ Transfer по ордеру {active_order_id} успешно подтверждён.")
+                    await message.answer(
+                        f"✅ Transfer по ордеру {format_order_link(active_order_id)} успешно подтверждён.",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
                 elif resume_state == "tx_pending":
-                    await message.answer(f"⚠️ Transfer по ордеру {active_order_id} отправлен, но ещё не подтверждён.")
+                    await message.answer(
+                        f"⚠️ Transfer по ордеру {format_order_link(active_order_id)} отправлен, но ещё не подтверждён.",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
                 elif resume_state == "expired":
                     return
                 else:
-                    await message.answer(f"❌ Transfer по ордеру {active_order_id} не выполнен: {resume_error}")
+                    await message.answer(
+                        f"❌ Transfer по ордеру {format_order_link(active_order_id)} не выполнен: {escape_html(resume_error)}",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
                 return
 
             pending_is_approve = (tx_error or "").startswith("APPROVE_TX_PENDING:")
@@ -2830,7 +2959,9 @@ async def cmd_execute(message: Message):
                     )
                     await db.commit()
                 await message.answer(
-                    f"⚠️ Для ордера {active_order_id} нет tx_hash, предыдущая попытка помечена как failed."
+                    f"⚠️ Для ордера {format_order_link(active_order_id)} нет tx_hash, предыдущая попытка помечена как failed.",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
                 )
                 return
             tx_status = await get_transfer_tx_status(from_asset, pending_tx_hash)
@@ -2842,8 +2973,10 @@ async def cmd_execute(message: Message):
                     )
                     await db.commit()
                 await message.answer(
-                    f"⚠️ Для ордера {active_order_id} ещё не определён статус транзакции.\n"
-                    "Новый ордер блокирован до подтверждения/фейла текущей TX."
+                    f"⚠️ Для ордера {format_order_link(active_order_id)} ещё не определён статус транзакции.\n"
+                    "Новый ордер блокирован до подтверждения/фейла текущей TX.",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
                 )
                 return
             if tx_status == "confirmed":
@@ -2859,7 +2992,11 @@ async def cmd_execute(message: Message):
                         )
                         await db.commit()
                     if claim_cur.rowcount != 1:
-                        await message.answer(f"⚠️ Transfer по ордеру {active_order_id} уже выполняется другим процессом.")
+                        await message.answer(
+                            f"⚠️ Transfer по ордеру {format_order_link(active_order_id)} уже выполняется другим процессом.",
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
                         return
                     resume_state, resume_approve_tx, resume_transfer_tx, resume_error = await resume_transfer_after_approve(
                         network_key=from_asset,
@@ -2887,13 +3024,25 @@ async def cmd_execute(message: Message):
                             )
                         await db.commit()
                     if resume_state == "confirmed":
-                        await message.answer(f"✅ Transfer по ордеру {active_order_id} успешно подтверждён.")
+                        await message.answer(
+                            f"✅ Transfer по ордеру {format_order_link(active_order_id)} успешно подтверждён.",
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
                     elif resume_state == "tx_pending":
-                        await message.answer(f"⚠️ Transfer по ордеру {active_order_id} отправлен, но ещё не подтверждён.")
+                        await message.answer(
+                            f"⚠️ Transfer по ордеру {format_order_link(active_order_id)} отправлен, но ещё не подтверждён.",
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
                     elif resume_state == "expired":
                         return
                     else:
-                        await message.answer(f"❌ Transfer по ордеру {active_order_id} не выполнен: {resume_error}")
+                        await message.answer(
+                            f"❌ Transfer по ордеру {format_order_link(active_order_id)} не выполнен: {escape_html(resume_error)}",
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
                     return
                 async with aiosqlite.connect(DB_PATH) as db:
                     await db.execute(
@@ -2902,7 +3051,9 @@ async def cmd_execute(message: Message):
                     )
                     await db.commit()
                 await message.answer(
-                    f"✅ Предыдущая TX по ордеру {active_order_id} подтверждена. Повтори /execute через несколько секунд."
+                    f"✅ Предыдущая TX по ордеру {format_order_link(active_order_id)} подтверждена. Повтори /execute через несколько секунд.",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
                 )
                 return
             async with aiosqlite.connect(DB_PATH) as db:
@@ -2919,25 +3070,26 @@ async def cmd_execute(message: Message):
         minutes = (time_left % 3600) // 60
         time_text = f"{hours}ч {minutes}мин" if hours > 0 else f"{minutes}мин"
         
-        order_url = f"https://fixedfloat.com/order/{active_order_id}"
-        
         await message.answer(
             f"⚠️ У этого плана уже есть активный ордер!\n\n"
-            f"🆔 ID: {active_order_id}\n"
-            f"🔗 Ссылка: {order_url}\n\n"
-            f"💵 Отправь: {active_order_amount}\n"
-            f"📍 На адрес:\n{active_order_address}\n\n"
-            f"🎯 Получишь BTC на:\n{btc_address}\n\n"
+            f"🔗 Ордер: {format_order_link(active_order_id)}\n\n"
+            f"💵 Отправь: {format_order_amount(active_order_amount, network_key=from_asset)}\n"
+            f"📍 На адрес:\n{short_address(active_order_address)}\n\n"
+            f"🎯 Получишь BTC на:\n{short_address(btc_address)}\n\n"
             f"⏰ Ордер действителен: {time_text}\n\n"
-            f"💡 Дождись истечения текущего ордера или завершения обмена"
+            f"💡 Дождись истечения текущего ордера или завершения обмена",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
         )
         return
     elif active_order_id and active_order_expires and active_order_expires <= now:
         fallback_result = await finalize_expired_unavailable_order(plan_id, active_order_id, active_order_expires, now)
         if fallback_result == "pending":
             await message.answer(
-                f"⚠️ Ордер {active_order_id} истёк, но transfer TX ещё в pending.\n"
-                "Новый ордер пока заблокирован до определения статуса транзакции."
+                f"⚠️ Ордер {format_order_link(active_order_id)} истёк, но transfer TX ещё в pending.\n"
+                "Новый ордер пока заблокирован до определения статуса транзакции.",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
             return
 
@@ -2980,7 +3132,7 @@ async def cmd_execute(message: Message):
             else:
                 await message.answer(
                     f"❌ Не удалось проверить лимиты для {from_asset}\n\n"
-                    f"Ошибка: {error_msg}\n\n"
+                    f"Ошибка: {escape_html(error_msg)}\n\n"
                     f"Попробуй позже"
                 )
             return
@@ -3004,7 +3156,7 @@ async def cmd_execute(message: Message):
             if plan_claimed:
                 await release_plan_claim(plan_id)
                 plan_claimed = False
-            await message.answer(f"❌ Неожиданный ответ FixedFloat: {data}")
+            await message.answer(f"❌ Неожиданный ответ FixedFloat: {escape_html(data)}")
             return
 
         # Парсим ответ
@@ -3029,9 +3181,6 @@ async def cmd_execute(message: Message):
         else:
             time_text = f"{minutes}мин"
 
-        # Формируем ссылку на ордер
-        order_url = f"https://fixedfloat.com/order/{order_id}"
-        
         # Сохраняем информацию об активном ордере в БД
         order_expires = int(time.time()) + int(time_left)
         async with aiosqlite.connect(DB_PATH) as db:
@@ -3109,14 +3258,12 @@ async def cmd_execute(message: Message):
                     )
                     await db.commit()
                 
-                safe_order_id = html.escape(str(order_id))
-                
                 msg = (
                     f"✅ USDT отправлен автоматически!\n\n"
-                    f'🆔 Ордер: <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
+                    f"🔗 Ордер: {format_order_link(order_id)}\n"
                     f"\n"
-                    f"💵 Отправлено: {required_amount:.2f} USDT\n"
-                    f"📍 На адрес: {deposit_address[:10]}...{deposit_address[-6:]}\n\n"
+                    f"💵 Отправлено: {format_order_amount(required_amount, network_key=from_asset)}\n"
+                    f"📍 На адрес: {short_address(deposit_address)}\n\n"
                 )
                 
                 if DRY_RUN:
@@ -3158,16 +3305,20 @@ async def cmd_execute(message: Message):
                     pending_tx_hash = approve_tx if error_msg.startswith("APPROVE_TX_PENDING:") else transfer_tx
                     await message.answer(
                         f"⚠️ Транзакция отправлена, но подтверждение ещё не получено\n\n"
-                        f"🆔 Ордер: {order_id}\n"
-                        f"Новый ордер не будет создан, пока статус TX не определится."
+                        f"🔗 Ордер: {format_order_link(order_id)}\n"
+                        f"Новый ордер не будет создан, пока статус TX не определится.",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
                     )
                     return
                 if is_retryable_network_error(error_msg) and (approve_tx or transfer_tx):
                     pending_tx_hash = transfer_tx or approve_tx
                     await message.answer(
                         f"⚠️ Транзакция отправлена, но подтверждение ещё не получено\n\n"
-                        f"🆔 Ордер: {order_id}\n"
-                        f"Новый ордер не будет создан, пока статус TX не определится."
+                        f"🔗 Ордер: {format_order_link(order_id)}\n"
+                        f"Новый ордер не будет создан, пока статус TX не определится.",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
                     )
                     return
 
@@ -3184,14 +3335,17 @@ async def cmd_execute(message: Message):
                     return
                 error_notification = build_auto_send_failed_notification(
                     order_id=order_id,
-                    order_url=order_url,
                     network_key=from_asset,
                     required_amount=required_amount,
                     deposit_address=deposit_address,
                     time_text=time_text,
                     error_msg=error_msg,
                 )
-                await message.answer(error_notification)
+                await message.answer(
+                    error_notification,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
                 logger.error(f"Auto-send failed for order {order_id}: {error_msg}")
         else:
             # Кошелёк не настроен - просим отправить вручную
@@ -3207,15 +3361,16 @@ async def cmd_execute(message: Message):
                 return
             await message.answer(
                 f"✅ Ордер создан!\n\n"
-                f"🆔 ID: {order_id}\n"
-                f"🔗 Ссылка: {order_url}\n\n"
-                f"💵 Отправь: {deposit_amount} {deposit_code}\n"
-                f"📍 На адрес:\n{deposit_address}\n\n"
-                f"🎯 Получишь BTC на:\n{btc_address}\n\n"
+                f"🔗 Ордер: {format_order_link(order_id)}\n\n"
+                f"💵 Отправь: {format_order_amount(deposit_amount, deposit_code, from_asset)}\n"
+                f"📍 На адрес:\n{short_address(deposit_address)}\n\n"
+                f"🎯 Получишь BTC на:\n{short_address(btc_address)}\n\n"
                 f"⏰ Ордер действителен: {time_text}\n\n"
                 f"💡 Для автоматической отправки:\n"
                 f"1. Настрой кошелёк: /setwallet\n"
-                f"2. Установи пароль: /setpassword"
+                f"2. Установи пароль: /setpassword",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
         
         logger.info(f"Ручной ордер создан: user_id={user_id}, plan_id={plan_id}, order_id={order_id}")
@@ -3224,7 +3379,7 @@ async def cmd_execute(message: Message):
         if plan_claimed:
             await release_plan_claim(plan_id)
         logger.error(f"Ошибка создания ордера для user_id={user_id}: {e}")
-        await message.answer(f"❌ Ошибка при создании ордера:\n{str(e)}")
+        await message.answer(f"❌ Ошибка при создании ордера:\n{escape_html(e)}")
 
 @dp.message(Command("status"))
 async def cmd_status(message: Message):
@@ -3254,17 +3409,19 @@ async def cmd_status(message: Message):
     # Вычисляем текущее время
     now = int(time.time())
     transfer_hash_by_order = {}
+    state_by_order = {}
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT plan_id, order_id, transfer_tx_hash "
+            "SELECT plan_id, order_id, transfer_tx_hash, state "
             "FROM sent_transactions WHERE user_id = ? ORDER BY sent_at DESC",
             (user_id,)
         ) as tx_cur:
             tx_rows = await tx_cur.fetchall()
-    for tx_plan_id, tx_order_id, tx_hash in tx_rows:
+    for tx_plan_id, tx_order_id, tx_hash, tx_state in tx_rows:
         key = (tx_plan_id, tx_order_id)
         if key not in transfer_hash_by_order:
             transfer_hash_by_order[key] = tx_hash
+            state_by_order[key] = tx_state
     
     status_text = f"📊 Твои DCA планы ({len(plans)}):\n\n"
     
@@ -3281,13 +3438,14 @@ async def cmd_status(message: Message):
         status_emoji = "✅" if active else "⏸"
         status_name = "Активен" if active else "Пауза"
         
-        masked_addr = btc_address[:10] + "..." + btc_address[-6:] if len(btc_address) > 16 else btc_address
+        masked_addr = short_address(btc_address)
+        network_label = get_network_label(from_asset) or from_asset
         
         status_text += (
             f"━━━━━━━━━━━━━━\n"
             f"📌 План {idx}\n"
-            f"{status_emoji} {from_asset} - {status_name}\n"
-            f"💵 Сумма: {amount} USD\n"
+            f"{status_emoji} {network_label} - {status_name}\n"
+            f"💵 Сумма: {format_order_amount(amount, network_key=from_asset)}\n"
             f"⏱ Интервал: раз в {format_interval(interval_hours)}\n"
             f"🎯 BTC: {masked_addr}\n"
             f"⏰ Следующая покупка через: {hours_left}ч {minutes_left}мин\n"
@@ -3309,22 +3467,25 @@ async def cmd_status(message: Message):
                 order_minutes = (order_time_left % 3600) // 60
                 order_time_text = f"{order_hours}ч {order_minutes}мин" if order_hours > 0 else f"{order_minutes}мин"
                 
-                order_url = f"https://fixedfloat.com/order/{order_id}"
                 transfer_tx_hash = transfer_hash_by_order.get((plan_id, order_id))
+                order_state = (state_by_order.get((plan_id, order_id)) or "").lower()
                 status_line = (
                     "USDT отправлены, обмен выполняется"
                     if transfer_tx_hash
-                    else "ожидается отправка USDT"
+                    else "❗ требуется ручная отправка" if order_state in {"failed", "blocked"} else "ожидается отправка USDT"
                 )
-                short_order_address = (
-                    f"{order_address[:15]}..." if order_address and len(order_address) > 15 else (order_address or "—")
+                short_order_address = short_address(order_address or "—")
+                formatted_order_amount = format_order_amount(order_amount, network_key=from_asset)
+                amount_line = (
+                    f"Отправлено: {formatted_order_amount}"
+                    if transfer_tx_hash
+                    else f"Отправь вручную: {formatted_order_amount}" if order_state in {"failed", "blocked"} else f"Отправь: {formatted_order_amount}"
                 )
-                amount_line = f"Отправлено: {order_amount}" if transfer_tx_hash else f"Отправь: {order_amount}"
                 
                 status_text += (
                     f"\n🔥 Активный ордер:\n"
                     f"Статус: {status_line}\n"
-                    f'ID: <a href="{order_url}">{order_id}</a>\n'
+                    f"🔗 Ордер: {format_order_link(order_id)}\n"
                     f"{amount_line}\n"
                     f"На адрес: {short_order_address}\n"
                     f"Истекает через: {order_time_text}\n"
@@ -3355,7 +3516,11 @@ async def cmd_status(message: Message):
         
         status_text += f"/delete_{idx} - удалить\n"
     
-    await message.answer(status_text)
+    await message.answer(
+        status_text,
+        parse_mode="HTML",
+        disable_web_page_preview=("fixedfloat.com/order/" in status_text),
+    )
 
 
 @dp.message(lambda message: message.text and message.text.startswith("/pause"))
@@ -3558,8 +3723,6 @@ async def cmd_delete(message: Message):
                 minutes = (time_left % 3600) // 60
                 time_text = f"{hours}ч {minutes}мин" if hours > 0 else f"{minutes}мин"
                 
-                order_url = f"https://fixedfloat.com/order/{active_order_id}"
-                
                 # Помечаем план как удаленный (мягкое удаление)
                 await db.execute(
                     "UPDATE dca_plans SET deleted = 1, active = 0 WHERE id = ? AND user_id = ?",
@@ -3570,13 +3733,14 @@ async def cmd_delete(message: Message):
                 await message.answer(
                     f"🗑 План {from_asset} удалён\n\n"
                     f"⚠️ У этого плана был активный ордер:\n"
-                    f"🆔 ID: {active_order_id}\n"
-                    f"🔗 Ссылка: {order_url}\n"
+                    f"🔗 Ордер: {format_order_link(active_order_id)}\n"
                     f"⏰ Истекает через: {time_text}\n\n"
                     f"💡 Ордер остаётся активным на FixedFloat.\n"
                     f"Завершите обмен или дождитесь истечения.\n\n"
                     f"❗️ Новый план с теми же параметрами (сеть + сумма + интервал + BTC адрес) можно создать только после истечения ордера.\n\n"
-                    f"Проверь оставшиеся планы: /status"
+                    f"Проверь оставшиеся планы: /status",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
                 )
                 logger.info(f"DCA план с активным ордером помечен как удаленный: user_id={user_id}, plan_id={plan_id}, asset={from_asset}, order_id={active_order_id}")
                 return
@@ -3695,7 +3859,7 @@ async def cmd_setwallet(message: Message):
         
         await message.answer(
             f"✅ Кошелёк инициализирован успешно!\n\n"
-            f"📍 Адрес: {wallet_address}\n\n"
+            f"📍 Адрес: {short_address(wallet_address)}\n\n"
             f"🔐 Безопасность:\n"
             f"• Wallet.json используется только для первичного импорта\n"
             f"• Приватный ключ зашифрован и сохранён в keystore\n\n"
@@ -3708,7 +3872,7 @@ async def cmd_setwallet(message: Message):
     
     except Exception as e:
         logger.error(f"Error in cmd_setwallet: {e}", exc_info=True)
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"❌ Ошибка: {escape_html(e)}")
 
 
 async def fetch_network_status(network_key: str, wallet_address: str):
@@ -3922,7 +4086,7 @@ async def cmd_walletstatus(message: Message):
         return
 
     status_text = f"💼 Wallet Status:\n\n"
-    status_text += f"📍 Address:\n{wallet_address[:10]}...{wallet_address[-6:]}\n\n"
+    status_text += f"📍 Address:\n{short_address(wallet_address)}\n\n"
     status_text += f"Balances on all networks:\n\n"
 
     from networks import NETWORKS
@@ -4117,7 +4281,7 @@ async def cmd_setdca(message: Message):
             else:
                 await message.answer(
                     f"❌ Не удалось проверить лимиты для {from_asset}\n\n"
-                    f"Ошибка: {error_msg}\n\n"
+                    f"Ошибка: {escape_html(error_msg)}\n\n"
                     f"Попробуй позже"
                 )
             return
@@ -4176,23 +4340,22 @@ async def cmd_setdca(message: Message):
                     hours = time_left // 3600
                     minutes = (time_left % 3600) // 60
                     time_text = f"{hours}ч {minutes}мин" if hours > 0 else f"{minutes}мин"
-                    order_url = f"https://fixedfloat.com/order/{order_id}"
-                    
                     await message.answer(
                         f"❌ Такой план уже существует и у него есть активный ордер!\n\n"
-                        f"📋 План: {from_asset}, {amount} USD, раз в {format_interval(interval)}\n\n"
+                        f"📋 План: {get_network_label(from_asset) or from_asset}, {format_order_amount(amount, network_key=from_asset)}, раз в {format_interval(interval)}\n\n"
                         f"🔥 Активный ордер:\n"
-                        f"🆔 ID: {order_id}\n"
-                        f"🔗 Ссылка: {order_url}\n"
+                        f"🔗 Ордер: {format_order_link(order_id)}\n"
                         f"⏰ Истекает через: {time_text}\n\n"
-                        f"💡 Дождись истечения ордера или используй другие параметры"
+                        f"💡 Дождись истечения ордера или используй другие параметры",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
                     )
                     return
                 else:
                     # План есть, но ордера нет или истёк
                     await message.answer(
                         f"❌ Такой план уже существует!\n\n"
-                        f"📋 План: {from_asset}, {amount} USD, раз в {format_interval(interval)}\n\n"
+                        f"📋 План: {get_network_label(from_asset) or from_asset}, {format_order_amount(amount, network_key=from_asset)}, раз в {format_interval(interval)}\n\n"
                         f"💡 Используй другую сумму или интервал"
                     )
                     return
@@ -4228,8 +4391,8 @@ async def cmd_setdca(message: Message):
                     # BTC адрес отличается - не наследуем ордер, создаём новый план
                     await message.answer(
                         f"⚠️ Найден активный ордер от удалённого плана, но BTC адрес отличается!\n\n"
-                        f"Старый адрес: {old_btc_address[:10]}...{old_btc_address[-6:]}\n"
-                        f"Новый адрес: {btc_address[:10]}...{btc_address[-6:]}\n\n"
+                        f"Старый адрес: {short_address(old_btc_address)}\n"
+                        f"Новый адрес: {short_address(btc_address)}\n\n"
                         f"💡 Создаю новый план без наследования ордера.\n"
                         f"Старый ордер остаётся активным на FixedFloat."
                     )
@@ -4259,15 +4422,15 @@ async def cmd_setdca(message: Message):
             await db.commit()
             action = "создан"
         
-        masked_addr = btc_address[:10] + "..." + btc_address[-6:] if len(btc_address) > 16 else btc_address
+        masked_addr = short_address(btc_address)
         
         # Форматируем интервал
         interval_text = format_interval(interval)
         
         await message.answer(
             f"✅ DCA план {action}!\n\n"
-            f"💱 Сеть: {from_asset}\n"
-            f"💵 Сумма: {amount} USD\n"
+            f"💱 Сеть: {get_network_label(from_asset) or from_asset}\n"
+            f"💵 Сумма: {format_order_amount(amount, network_key=from_asset)}\n"
             f"⏱ Интервал: раз в {interval_text}\n"
             f"🎯 На адрес: {masked_addr}\n\n"
             f"⏰ Первый запуск через {interval_text}\n\n"
@@ -4278,10 +4441,10 @@ async def cmd_setdca(message: Message):
         logger.info(f"DCA план {action}: user_id={user_id}, {from_asset}, {amount} USD, {interval}ч")
         
     except ValueError as e:
-        await message.answer(f"❌ Ошибка в параметрах: {str(e)}")
+        await message.answer(f"❌ Ошибка в параметрах: {escape_html(e)}")
     except Exception as e:
         logger.error(f"Ошибка создания DCA плана: {e}")
-        await message.answer(f"❌ Ошибка: {str(e)}")
+        await message.answer(f"❌ Ошибка: {escape_html(e)}")
 
 
 # ============================================================================
@@ -4344,14 +4507,13 @@ async def order_monitor():
                     if status in SUCCESS_FIXEDFLOAT_ORDER_STATUSES:
                         await mark_order_completed(plan_id, order_id, f"fixedfloat_{status}")
                         btc_txid = await fetch_btc_txid(order_id)
-                        safe_order_id = html.escape(str(order_id))
                         if btc_txid:
                             safe_btc_txid = html.escape(str(btc_txid))
                             completion_text = (
                                 f'✅ Ордер завершён\n\n'
-                                f'Ордер <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
-                                f"💵 Сумма: {float(amount):.2f} USDT\n"
-                                f"🎯 BTC адрес:\n{btc_address}\n\n"
+                                f"🔗 Ордер: {format_order_link(order_id)}\n"
+                                f"💵 Сумма: {format_order_amount(amount, network_key=network_key)}\n"
+                                f"🎯 BTC адрес:\n{short_address(btc_address)}\n\n"
                                 f'TX: <a href="https://blockchair.com/bitcoin/transaction/{safe_btc_txid}">TX ID</a>'
                             )
                             await update_order_progress_message(int(user_id), str(order_id), completion_text)
@@ -4363,9 +4525,9 @@ async def order_monitor():
                             logger.info("Waiting for BTC TX for order %s", order_id)
                             waiting_text = (
                                 f'⏳ Ордер выполнен, ожидаем BTC транзакцию...\n\n'
-                                f'Ордер <a href="https://ff.io/order/{safe_order_id}">{safe_order_id}</a>\n'
-                                f"💵 Сумма: {float(amount):.2f} USDT\n"
-                                f"🎯 BTC адрес:\n{btc_address}"
+                                f"🔗 Ордер: {format_order_link(order_id)}\n"
+                                f"💵 Сумма: {format_order_amount(amount, network_key=network_key)}\n"
+                                f"🎯 BTC адрес:\n{short_address(btc_address)}"
                             )
                             await update_order_progress_message(int(user_id), str(order_id), waiting_text)
                         logger.info(f"Order {order_id} marked as completed for user {user_id}")
