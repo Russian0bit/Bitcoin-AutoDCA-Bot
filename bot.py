@@ -2343,13 +2343,9 @@ async def cmd_start(message: Message):
         f"📋 Доступные команды:\n\n"
         f"🔧 Настройка:\n"
         f"/setwallet — настроить кошелёк\n"
-        f"/setdca — создать DCA план\n"
-        f"/status — статус планов\n"
-        f"/pause — приостановить план\n"
-        f"/resume — возобновить план\n"
-        f"/delete — удалить план\n\n"
+        f"/setdca — создать DCA план\n\n"
         f"⚙️ Команды:\n"
-        f"/execute — выполнить план вручную\n"
+	f"/status — статус планов\n"
         f"/networks — доступные сети\n"
         f"/limits — лимиты обмена\n\n"
         f"ℹ️ Информация:\n"
@@ -2359,8 +2355,7 @@ async def cmd_start(message: Message):
         f"/ping — проверка бота\n\n"
         f"💡 Начни с /setwallet для настройки кошелька!\n\n"
         f"—\n\n"
-        f"Created by @Russian0bit\n"
-        f"Больше о Биткоине и финансах: @Cryptobotan",
+        f"Created by @Cryptobotan\n",
         parse_mode=None  # Plain text, no markdown
     )
     logger.info(f"New user: {user_id} (@{username})")
@@ -2377,22 +2372,19 @@ async def cmd_help(message: Message):
         "Автопокупка BTC за USDT с вашего EVM кошелька\n"
         "Сети: Arbitrum, Polygon, BSC\n"
         "Автоотправка BTC на ваш Bitcoin адрес\n"
-        "DCA стратегии: 1 раз в день / неделю / месяц\n\n"
+        "DCA стратегии: 1 раз в 12 часов / день / неделю / месяц\n\n"
         "—\n\n"
         "⚠️ ВАЖНО:\n\n"
         "• После успешного /setwallet не забудь удалить wallet.json\n"
-        "• Telegram — интерфейс управления DCA стратегиями\n"
         "• Бот работает локально на вашем компьютере\n"
         "• Все приватные ключи зашифрованы и хранятся у вас\n"
-        "• Для 24/7 работы нужен сервер или автозапуск\n"
-        "• После перезапуска настройки и планы сохраняются\n\n"
+        "• Для работы 24/7 нужен сервер или автозапуск\n"
         "—\n\n"
         "⚙️ Как это работает?\n\n"
         "1. Создаешь DCA план: /setdca\n"
-        "2. Покупка BTC происходит автоматически по расписанию\n"
-        "3. Бот создает ордер на ff.io\n"
-        "4. Отправляет USDT на адрес от ff.io\n"
-        "5. BTC приходит на указанный адрес\n\n"
+        "2. Бот создает ордер на ff.io\n"
+        "3. Отправляет USDT с вашего EVM кошелька для покупки BTC\n"
+        "4. BTC приходят на указанный адрес\n\n"
         "—\n\n"
         "📊 Команды:\n\n"
         "/setwallet — настроить кошелёк\n"
@@ -2400,16 +2392,15 @@ async def cmd_help(message: Message):
         "/status — статус планов\n"
         "/limits — лимиты обмена\n"
         "/history — история операций\n"
-        "/walletstatus — баланс кошелька\n"
-        "/networks — доступные сети\n\n"
+        "/walletstatus — баланс EVM-кошелька\n"
+        "/networks — доступные сетей\n\n"
         "—\n\n"
-        "🔄 Сброс кошелька:\n\n"
+        "🔄 Замена EVM-кошелька (если нужен другой кошелек):\n\n"
         "1. Выполни /deletewallet\n"
-        "2. Создай новый wallet.json (если нужен другой кошелек)\n"
+        "2. Вручную создай новый wallet.json\n"
         "3. Выполни /setwallet снова\n\n"
         "—\n\n"
-        "Created by @Russian0bit\n"
-        "Больше о Биткоине и финансах: @Cryptobotan",
+        "Created by @Cryptobotan\n",
         parse_mode=None
     )
 
@@ -3299,7 +3290,7 @@ async def cmd_status(message: Message):
             f"💵 Сумма: {amount} USD\n"
             f"⏱ Интервал: раз в {format_interval(interval_hours)}\n"
             f"🎯 BTC: {masked_addr}\n"
-            f"⏰ Через: {hours_left}ч {minutes_left}мин\n"
+            f"⏰ Следующая покупка через: {hours_left}ч {minutes_left}мин\n"
         )
         
         # Проверяем есть ли активный ордер (и не истёк ли он)
@@ -3333,8 +3324,7 @@ async def cmd_status(message: Message):
                 status_text += (
                     f"\n🔥 Активный ордер:\n"
                     f"Статус: {status_line}\n"
-                    f"ID: {order_id}\n"
-                    f"Ссылка: {order_url}\n"
+                    f'ID: <a href="{order_url}">{order_id}</a>\n'
                     f"{amount_line}\n"
                     f"На адрес: {short_order_address}\n"
                     f"Истекает через: {order_time_text}\n"
