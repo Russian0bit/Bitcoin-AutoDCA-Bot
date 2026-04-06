@@ -1,191 +1,125 @@
-# BTC_AutoDCA_Bot
+#Cryptobotan Bitcoin AutoDCA Bot
 
-Telegram-бот для DCA-покупки Bitcoin (BTC) через DEX FixedFloat.
+Telegram-бот для автоматической DCA-покупки BTC через FixedFloat.
+Работает локально на вашем устройстве (Windows / macOS / Linux).
 
-Бот поддерживает два режима:
-- **Manual mode** — пользователь отправляет USDT вручную.
-- **Auto Send mode** — бот автоматически отправляет USDT с EVM-кошелька.
+⚡ Возможности
 
-Приватный ключ импортируется один раз, шифруется и сохраняется как `keystore` файл.
-Пароль хранится в OS keyring.
+Покупка BTC по расписанию (день / неделя / месяц)
+Работает в 2 режимах:
+- Manual — вы отправляете USDT вручную
+- Auto — бот отправляет USDT сам
+Поддержка сетей: Arbitrum, BSC, Polygon
+После перезапуска все планы сохраняются
+Для работы 24/7: используйте собственный сервер или настройте автозапуск при включении компьютера.
+❗ Облачные сервера использовать не рекомендуется (есть риск компрометации ключей, токенов к ботам, API-ключей )
 
-## 🚀 Features
+🚀 Быстрый старт
 
-- DCA-покупка BTC по расписанию.
-- Два режима работы: Manual mode и Auto Send mode.
-- Поддержка сетей: Arbitrum, BSC, Polygon.
-- Импорт `wallet.json` и безопасное хранение ключа в `keystore`.
-- Хранение пароля в OS keyring.
-- Проверка `execution_window` для защиты от позднего исполнения.
-- Offline recovery при перезапуске.
-- Пропуск устаревших циклов (`execution_state = skipped`).
-- Защита от duplicate execution при конкурентных запусках.
+1) Скачивайте бота
+git clone https://github.com/Russian0bit/Bitcoin-AutoDCA-Bot.git
+cd Bitcoin-AutoDCA-Bot
 
-## 🔄 Режимы работы
+Установка Python (если не установлен)
+Проверьте, установлен ли Python:
 
-### Manual mode
-Бот создаёт ордер FixedFloat и показывает адрес депозита.  
-USDT отправляются вручную пользователем.
+python3 --version
 
-### Auto Send mode
-Бот создаёт ордер FixedFloat и автоматически отправляет USDT с настроенного EVM-кошелька.
+Если команда не найдена — установите Python одним из способов ниже:
 
-## 📋 Требования
+🖥 macOS
+brew install python
 
-- Python 3.9+
-- Telegram Bot Token
-- Telegram Admin ID
-- FixedFloat API Key и FixedFloat API Secret
+🐧 Linux (Ubuntu / Debian)
+sudo apt update
+sudo apt install python3 python3-venv python3-pip
 
-## 🔧 Installation
+🪟 Windows
+Вариант 1 (простой):
+Скачать с официального сайта и установить
+https://www.python.org/downloads/
+Обязательно поставить галочку "Add Python to PATH"
 
-### 1) Установка проекта
+Вариант 2 (через терминал):
+winget install Python.Python.3
 
-1. Клонируйте репозиторий:
-```bash
-git clone https://github.com/yourusername/autodca-bot.git
-cd autodca-bot
-```
+2) Виртуальные окружение
 
-2. Создайте виртуальное окружение:
-```bash
+macOS / Linux:
 python3 -m venv venv
-source venv/bin/activate  # macOS / Linux
-# или
-venv\Scripts\activate     # Windows
-```
+source venv/bin/activate
 
-3. Установите зависимости:
-```bash
+Windows (PowerShell):
+python -m venv venv
+venv\Scripts\activate
+
+3) Установка зависимостей
 pip install -r requirements.txt
-```
 
-### 2) Первичная настройка
+Если возникает ошибка — попробуйте:
+pip3 install -r requirements.txt
 
-Подготовьте 4 параметра:
-- **Telegram Bot Token** — через [@BotFather](https://t.me/BotFather), команда `/newbot`
-- **Telegram Admin ID** — через [@my_id_bot](https://t.me/my_id_bot)
-- **FixedFloat API Key**
-- **FixedFloat API Secret**  
-  Получить: [https://ff.io/user/apikey](https://ff.io/user/apikey)
+4) Настройка .env
 
-### 3) Настройка `.env`
+Создайте текстовый файл .env
 
-1. Откройте папку проекта.
-2. Найдите файл `.env.example`.
-3. Скопируйте его.
-4. Переименуйте копию в `.env`.
-5. Откройте `.env` в любом текстовом редакторе и заполните значения:
-
-```env
-# Telegram bot
 DCA_TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 ADMIN_USER_ID=123456789
-
-# FixedFloat API
 FF_API_KEY=your_fixedfloat_api_key
 FF_API_SECRET=your_fixedfloat_api_secret
-```
 
-### 4) Настройка кошелька
+Где взять:
 
-Создайте текстовый файл `wallet.txt` в папке с ботом. Укажите там данные:
+Bot Token → @BotFather (/newbot)
+User ID → @my_id_bot
+API ключи → https://ff.io
 
-```json
+5) Настройка кошелька (для Auto режима)
+
+Создайте файл Wallet.json с содержимым
+
 {
   "private_key": "0xYOUR_PRIVATE_KEY",
   "password": "YOUR_PASSWORD"
 }
-```
-Затем переименуйте файл в `wallet.json`
 
-После этого в Telegram выполните:
+6) Запуск:
 
-```text
-/setwallet
-```
-
-Что произойдёт:
-- бот зашифрует приватный ключ;
-- создаст `keystore`;
-- сохранит пароль в OS keyring.
-
-После успешного импорта `wallet.json` можно удалить.
-
-## ▶️ Запуск бота
-
-**Mac / Linux**
-```bash
+Mac / Linux:
 python3 bot.py
-```
 
-**Windows**
-```bash
+Windows:
 python bot.py
-```
 
-После запуска бот:
-- создаёт базу данных (если ещё нет);
-- запускает scheduler;
-- начинает выполнять DCA-планы.
+7) Инициализация
 
-## ⛽ Требования к газу
+В Telegram:
+/setwallet
 
-Для автоотправки USDT на кошельке должен быть газ:
-- **Arbitrum** → ETH
-- **BSC** → BNB
-- **Polygon** → POLYGON
+После этого создастся keystore и пароль сохранится.
+УДАЛИТЕ файл wallet.json
 
-## 📖 Commands
+Поздравляю ваш DCA-бот для автопокупки BTC настроен. 
 
-- `/start` — приветствие и список команд
-- `/help` — подробная справка
-- `/setwallet` — импорт/настройка кошелька
-- `/walletstatus` — балансы кошелька
-- `/setdca СЕТЬ СУММА ИНТЕРВАЛ BTC_АДРЕС` — создать DCA-план
-- `/status` — статус планов
-- `/execute` или `/execute_N` — выполнить план вручную
-- `/pause` или `/pause_N` — приостановить план
-- `/resume` или `/resume_N` — возобновить план
-- `/delete` или `/delete_N` — удалить план
-- `/limits` — лимиты обмена
-- `/history` — история операций
-- `/networks` — доступные сети
 
-## 📝 Пример DCA-плана
+🧠 Пример стратегии
+/setdca USDT-ARB 50 24 bc1q...
+50$ каждые 24 часа
+сеть Arbitrum
+BTC на ваш адрес
 
-```text
-/setdca USDT-ARB 50 24 bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh
-```
+🔒 Безопасность
+приватный ключ шифруется (keystore)
+пароль хранится в OS keyring
+.env и wallet.json не коммитить
 
-- `USDT-ARB` — сеть (Arbitrum)
-- `50` — сумма в USD
-- `24` — интервал в часах (12, 24, 168, 720)
-- `bc1q...` — BTC-адрес для получения
-
-## 🏗️ Architecture
-
-Основные компоненты:
-1. **DCA Scheduler** — проверяет планы каждую минуту.
-2. **SQLite** — хранит планы, ордера, статусы и историю.
-3. **FixedFloat API** — создание и отслеживание ордеров USDT → BTC.
-4. **Telegram Bot (aiogram)** — команды и уведомления.
-
-Ключевые механики:
-- execution window (защита от позднего исполнения);
-- offline recovery после рестарта;
-- skipped/expired циклы;
-- duplicate execution protection.
-
-## 🔒 Security
-
-- `private_key` импортируется из `wallet.json` один раз.
-- Ключ шифруется и хранится в `keystore`.
-- Пароль хранится в OS keyring.
-- `wallet.json` используется только для импорта и затем удаляется.
-- API-ключи хранятся в `.env` (не коммитятся в Git).
-
-⚠️ Никогда не коммитьте `wallet.json` в Git.
+🧭 Roadmap / улучшения
+улучшение UX (интерфейс как приложение)
+гибкие стратегии (время, dip-buy)
+уведомления о падении BTC
+поддержка ETH / SOL / LightningBTC
+больше сетей и бирж
+Добавление множества BTC-адресов для получения
 
 ## 📄 Лицензия
 
