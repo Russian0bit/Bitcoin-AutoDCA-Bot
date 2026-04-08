@@ -166,19 +166,15 @@ python bot.py
 
 ## 🧠 Пример стратегии
 
-/setdca USDT-ARB 50 24 bc1q...
-
-50$ каждые 24 часа в сети Arbitrum
-
-BTC на ваш адрес
+- /setdca USDT-ARB 50 24 bc1q...
+- 50$ каждые 24 часа в сети Arbitrum
+- BTC на ваш адрес
 
 ## 🔒 Безопасность
 
-приватный ключ шифруется (keystore)
-
-пароль хранится в OS keyring
-
-.env и wallet.json не коммитить
+- приватный ключ шифруется (keystore)
+- пароль хранится в OS keyring
+- .env и wallet.json не коммитить
 
 ## 🧭 Roadmap / улучшения
 
