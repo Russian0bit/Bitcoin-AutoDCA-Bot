@@ -183,12 +183,14 @@ _balances_cache: Dict[tuple[str, str], Dict[str, Any]] = {}
 CACHE_TTL = 20
 
 # Маппинг пользовательских названий сетей на коды FixedFloat API
-# Обновляется при старте бота из реального списка валют
-NETWORK_CODES = {
+NETWORK_MAP = {
     "USDT-ARB": "USDTARBITRUM",
-    "USDT-BSC": "USDTBSC", 
+    "USDT-BSC": "USDTBSC",
     "USDT-POLYGON": "USDTPOLYGON",
 }
+
+# Runtime-копия, может обновляться по данным API на старте
+NETWORK_CODES = NETWORK_MAP.copy()
 
 FIXEDFLOAT_ASSET_MAP = {
     "USDT-ARB": "USDTARB",
@@ -350,10 +352,20 @@ def format_order_link(order_id: Any) -> str:
     return f'<a href="https://fixedfloat.com/order/{safe_order_id}">{safe_order_id}</a>'
 
 
+def format_code_address(address: Any) -> str:
+    safe_address = escape_html(address)
+    return f"<code>{safe_address}</code>" if safe_address else "<code>—</code>"
+
+
 def normalize_code(value: str) -> str:
     if not value:
         return ""
     return str(value).replace("-", "").replace("_", "").upper()
+
+
+def get_fixedfloat_symbol(user_symbol: str) -> str:
+    normalized_symbol = normalize_network_key(user_symbol)
+    return NETWORK_MAP.get(normalized_symbol) or NETWORK_CODES.get(normalized_symbol, "")
 
 
 def validate_btc_address(address: str) -> bool:
@@ -475,10 +487,8 @@ def build_auto_send_failed_notification(
         f"🔗 Ордер: {format_order_link(order_id)}\n"
         f"🌐 Сеть: {network_label}\n\n"
         f"Причина:\n{human_error}\n\n"
-        "💵 Отправить вручную:\n"
-        f"{format_order_amount(required_amount, network_key=network_key)}\n"
-        "📍 На адрес:\n"
-        f"{short_address(deposit_address)}\n\n"
+        f"💵 Отправить вручную: {format_order_amount(required_amount, network_key=network_key)}\n"
+        f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
         f"⏰ Ордер действителен: {safe_time_text}"
     )
 
@@ -1400,7 +1410,7 @@ async def get_fixedfloat_limits(network_key: str) -> dict:
     Raises:
         RuntimeError: если сеть недоступна или API вернул ошибку
     """
-    from_ccy = NETWORK_CODES.get(network_key)
+    from_ccy = get_fixedfloat_symbol(network_key)
     if not from_ccy:
         raise ValueError(f"Неизвестная сеть: {network_key}")
     
@@ -1470,7 +1480,7 @@ def create_fixedfloat_order(network_key: str, amount_usdt: float, btc_address: s
     Returns:
         dict с данными созданного ордера (id, адрес депозита, сумма и т.д.)
     """
-    from_ccy = NETWORK_CODES.get(network_key)
+    from_ccy = get_fixedfloat_symbol(network_key)
     if not from_ccy:
         raise ValueError(f"Неизвестная сеть: {network_key}")
 
@@ -2044,9 +2054,9 @@ async def dca_scheduler():
                                 await bot.send_message(
                                     user_id,
                                     f"❌ Ошибка выполнения DCA плана:\n\n"
-                                    f"Сумма {amount:.2f} USDT вне допустимых лимитов для {from_asset}\n"
-                                    f"Минимум: {min_limit:.2f} USDT\n"
-                                    f"Максимум: {effective_max:.2f} USDT\n\n"
+                                    f"Сумма {format_amount(amount)} USDT вне допустимых лимитов для {from_asset}\n"
+                                    f"Минимум: {format_amount(min_limit)} USDT\n"
+                                    f"Максимум: {format_amount(effective_max)} USDT\n\n"
                                     f"💡 Обнови план с корректной суммой"
                                 )
                                 # Откладываем на следующий интервал
@@ -2251,7 +2261,7 @@ async def dca_scheduler():
                                     f"🔗 Ордер: {format_order_link(order_id)}\n"
                                     f"\n"
                                     f"💵 Sent: {format_order_amount(required_amount, network_key=from_asset)}\n"
-                                    f"📍 To: {short_address(deposit_address)}\n\n"
+                                    f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
                                 )
                                 
                                 if DRY_RUN:
@@ -2387,7 +2397,7 @@ async def dca_scheduler():
                                 f"✅ DCA plan executed!\n\n"
                                 f"🔗 Ордер: {format_order_link(order_id)}\n\n"
                                 f"💵 Send: {format_order_amount(deposit_amount, deposit_code, from_asset)}\n"
-                                f"📍 Deposit address:\n{short_address(deposit_address)}\n\n"
+                                f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
                                 f"⏰ Order valid for: {time_text}\n\n"
                                 f"💡 For auto-send, setup wallet:\n"
                                 f"/setwallet",
@@ -2454,7 +2464,8 @@ async def cmd_start(message: Message):
         f"/setwallet — настроить кошелёк\n"
         f"/setdca — создать DCA план\n\n"
         f"⚙️ Команды:\n"
-	f"/status — статус планов\n"
+        f"/status — статус планов\n"
+        f"/markets — сети и лимиты\n"
         f"/networks — доступные сети\n"
         f"/limits — лимиты обмена\n\n"
         f"ℹ️ Информация:\n"
@@ -2499,6 +2510,7 @@ async def cmd_help(message: Message):
         "/setwallet — настроить кошелёк\n"
         "/setdca — создать DCA план\n"
         "/status — статус планов\n"
+        "/markets — сети и лимиты\n"
         "/limits — лимиты обмена\n"
         "/history — история операций\n"
         "/walletstatus — баланс EVM-кошелька\n"
@@ -2590,51 +2602,87 @@ async def cmd_limits(message: Message):
     """
     try:
         await message.answer("⏳ Получаю лимиты...")
-        
+
         limits_text = "💱 Лимиты обмена USDT → BTC\n\n"
-        
-        # Проверяем лимиты для всех поддерживаемых сетей
-        for network_name, network_code in NETWORK_CODES.items():
+        for network_name in NETWORK_MAP.keys():
+            api_symbol = get_fixedfloat_symbol(network_name)
             try:
                 data = await ff_request_async("price", {
                     "type": "fixed",
-                    "fromCcy": network_code,
+                    "fromCcy": api_symbol,
                     "toCcy": "BTC",
                     "direction": "from",
                     "amount": 50,
                 })
-                
-                from_info = data.get("from", {})
-                to_info = data.get("to", {})
-                min_amt = from_info.get("min", "—")
-                max_amt = from_info.get("max", "—")
-                to_amount = to_info.get("amount", "—")
-                
-                # Вычисляем курс: сколько USDT за 1 BTC
-                if to_amount and to_amount != "—":
-                    btc_amount = float(to_amount)  # BTC за 50 USDT
-                    rate = 50.0 / btc_amount  # USDT за 1 BTC
-                    rate_formatted = f"{rate:,.2f} USDT"
+                from_info = data.get("from", {}) or {}
+                to_info = data.get("to", {}) or {}
+                min_amt = from_info.get("min")
+                to_amount = to_info.get("amount")
+                if to_amount:
+                    rate_value = 50.0 / float(to_amount)
+                    rate_formatted = f"{rate_value:,.2f}"
                 else:
                     rate_formatted = "—"
-                
-                # Показываем минимум от FixedFloat и максимум бота (500)
-                limits_text += f"🔹 {network_name}:\n"
-                limits_text += f"   Минимум: {min_amt} USDT\n"
-                limits_text += f"   Максимум: 500 USDT (ограничено настройками бота)\n"
-                limits_text += f"   Курс: 1 BTC = {rate_formatted}\n\n"
-                
+
+                limits_text += (
+                    f"🔹 {network_name}\n"
+                    f"Мин: {format_amount(float(min_amt)) if min_amt is not None else '—'} USDT\n"
+                    f"Макс: 500 USDT\n"
+                    f"Курс: 1 BTC = {rate_formatted} USDT\n\n"
+                )
             except Exception as e:
-                logger.error(f"Ошибка получения лимитов для {network_name}: {e}")
-                limits_text += f"🔹 {network_name}: ошибка\n\n"
-        
-        limits_text += "💡 Лимиты обновляются в реальном времени"
-        
+                logger.error(f"Ошибка получения лимитов для {network_name} ({api_symbol}): {e}")
+                limits_text += (
+                    f"🔹 {network_name}\n"
+                    f"❌ Не удалось получить лимиты ({escape_html(e)})\n\n"
+                )
+
         await message.answer(limits_text, parse_mode=None)
-        
+
     except Exception as e:
         logger.error(f"Ошибка получения лимитов: {e}")
         await message.answer(f"❌ Ошибка получения лимитов: {escape_html(e)}")
+
+
+async def fetch_fixedfloat_available_networks() -> tuple[dict[str, str], bool]:
+    available_networks: dict[str, str] = {}
+    try:
+        items = await ff_request_async("ccies", {})
+        for item in items:
+            logger.info(f"[FF RAW] item: {item}")
+            if item.get("coin") == "USDT":
+                code = normalize_code(item.get("code"))
+                network = normalize_code(item.get("network"))
+                if code:
+                    available_networks[code] = network
+        logger.info(f"[FF] available_networks: {available_networks}")
+        return available_networks, True
+    except Exception as api_error:
+        logger.error(f"API FixedFloat недоступен: {api_error}")
+        return available_networks, False
+
+
+def is_network_available_on_fixedfloat(network_key: str, available_networks: dict[str, str]) -> bool:
+    candidates = {
+        normalize_code(NETWORK_MAP.get(network_key)),
+        normalize_code(FIXEDFLOAT_ASSET_MAP.get(network_key)),
+    }
+    candidates.discard("")
+    if not candidates:
+        return False
+    for key, network in available_networks.items():
+        normalized_key = normalize_code(key)
+        normalized_network = normalize_code(network)
+        for candidate in candidates:
+            if (
+                candidate == normalized_key
+                or candidate in normalized_key
+                or normalized_key in candidate
+                or candidate in normalized_network
+                or normalized_network in candidate
+            ):
+                return True
+    return False
 
 
 @dp.message(Command("networks"))
@@ -2645,99 +2693,73 @@ async def cmd_networks(message: Message):
     """
     try:
         await message.answer("⏳ Проверяю доступность сетей на FixedFloat...")
-        
-        available_networks = {}
-        api_available = True
-        try:
-            # Получаем список всех валют из FixedFloat
-            items = await ff_request_async("ccies", {})
-            
-            # Собираем доступные USDT сети
-            available_networks = {}
-            for item in items:
-                logger.info(f"[FF RAW] item: {item}")
-                if item.get("coin") == "USDT":
-                    code = str(item.get("code", "")).upper()
-                    network = str(item.get("network", "")).upper()
-                    if code:
-                        available_networks[code] = network
-            logger.info(f"[FF] available_networks: {available_networks}")
-        except Exception as api_error:
-            api_available = False
-            logger.error(f"API FixedFloat недоступен в /networks: {api_error}")
-        
-        # Проверяем поддерживаемые ботом сети
+
+        available_networks, api_available = await fetch_fixedfloat_available_networks()
+
         text = "🌐 Доступные сети USDT:\n\n"
-        text += "Поддерживаемые ботом:\n"
-        
-        bot_supported = {
-            "USDT-ARB": FIXEDFLOAT_ASSET_MAP.get("USDT-ARB", "USDTARB"),
-            "USDT-BSC": FIXEDFLOAT_ASSET_MAP.get("USDT-BSC", "USDTBSC"),
-            "USDT-POLYGON": FIXEDFLOAT_ASSET_MAP.get("USDT-POLYGON", "USDTMATIC"),
-        }
-        
-        for bot_name, api_code in bot_supported.items():
-            if api_available:
-                ff_asset = FIXEDFLOAT_ASSET_MAP.get(bot_name)
-                normalized_ff = normalize_code(ff_asset) if ff_asset else ""
-                available = False
-                if normalized_ff:
-                    available = any(
-                        normalized_ff == normalize_code(key)
-                        or normalized_ff in normalize_code(key)
-                        or normalize_code(key) in normalized_ff
-                        or normalized_ff in normalize_code(network)
-                        or normalize_code(network) in normalized_ff
-                        for key, network in available_networks.items()
-                    )
-                logger.info(f"[FF] check {bot_name} -> {ff_asset} -> {available}")
-                if available:
-                    status = "✅"
-                    matched_key = next(
-                        (
-                            key for key, network in available_networks.items()
-                            if (
-                                normalized_ff == normalize_code(key)
-                                or normalized_ff in normalize_code(key)
-                                or normalize_code(key) in normalized_ff
-                                or normalized_ff in normalize_code(network)
-                                or normalize_code(network) in normalized_ff
-                            )
-                        ),
-                        None
-                    )
-                    network_name = available_networks.get(matched_key, "доступна")
-                else:
-                    status = "❌"
-                    network_name = "недоступна"
-            else:
-                status = "❌"
-                network_name = "unknown (API недоступно)"
-            text += f"{status} {bot_name} - {network_name}\n"
-        
-        # Показываем другие доступные USDT сети
-        text += "\nДругие сети USDT на FixedFloat:\n"
-        
-        other_networks = []
-        for code, network in available_networks.items():
-            if code not in bot_supported.values():
-                other_networks.append(f"• {code} - {network}")
-        
-        if other_networks:
-            text += "\n".join(other_networks[:10])  # показываем до 10 других сетей
-        else:
-            text += "Нет других доступных сетей"
-        
-        if api_available:
-            text += "\n\n💡 Данные обновлены в реальном времени"
-        else:
-            text += "\n\n⚠️ API недоступен, показан локальный fallback (unknown)"
-        
+        for network_key in NETWORK_MAP.keys():
+            available = is_network_available_on_fixedfloat(network_key, available_networks) if api_available else False
+            text += f"{'✅' if available else '❌'} {network_key}\n"
+        if not api_available:
+            text += "\n⚠️ Не удалось проверить FixedFloat API"
+
         await message.answer(text, parse_mode=None)
-        
+
     except Exception as e:
         logger.error(f"Ошибка получения списка сетей: {e}")
         await message.answer(f"❌ Ошибка получения списка сетей: {escape_html(e)}")
+
+
+@dp.message(Command("markets"))
+async def cmd_markets(message: Message):
+    """
+    Команда /markets - показать доступные сети и лимиты USDT -> BTC.
+    """
+    try:
+        await message.answer("⏳ Получаю рынки и лимиты...")
+        available_networks, api_available = await fetch_fixedfloat_available_networks()
+        text = "🌐 Доступные сети и лимиты:\n\n"
+        for network_key in NETWORK_MAP.keys():
+            available = is_network_available_on_fixedfloat(network_key, available_networks) if api_available else False
+            text += f"🔹 {network_key}\n"
+            if not api_available:
+                text += "❌ FixedFloat API недоступен\n\n"
+                continue
+            if not available:
+                text += "❌ Сеть недоступна на FixedFloat\n\n"
+                continue
+
+            api_symbol = get_fixedfloat_symbol(network_key)
+            try:
+                data = await ff_request_async("price", {
+                    "type": "fixed",
+                    "fromCcy": api_symbol,
+                    "toCcy": "BTC",
+                    "direction": "from",
+                    "amount": 50,
+                })
+                from_info = data.get("from", {}) or {}
+                to_info = data.get("to", {}) or {}
+                min_amt = from_info.get("min")
+                to_amount = to_info.get("amount")
+                if to_amount:
+                    rate_value = 50.0 / float(to_amount)
+                    rate_text = f"{rate_value:,.2f}"
+                else:
+                    rate_text = "—"
+                text += (
+                    f"Мин: {format_amount(float(min_amt)) if min_amt is not None else '—'} USDT\n"
+                    f"Макс: 500 USDT\n"
+                    f"Курс: 1 BTC = {rate_text} USDT\n\n"
+                )
+            except Exception as e:
+                logger.error(f"/markets: ошибка получения лимитов для {network_key} ({api_symbol}): {e}")
+                text += f"❌ Не удалось получить лимиты ({escape_html(e)})\n\n"
+
+        await message.answer(text, parse_mode=None)
+    except Exception as e:
+        logger.error(f"Ошибка /markets: {e}")
+        await message.answer(f"❌ Ошибка получения рынков: {escape_html(e)}")
 
 
 @dp.message(lambda message: message.text and message.text.startswith("/execute"))
@@ -3074,8 +3096,8 @@ async def cmd_execute(message: Message):
             f"⚠️ У этого плана уже есть активный ордер!\n\n"
             f"🔗 Ордер: {format_order_link(active_order_id)}\n\n"
             f"💵 Отправь: {format_order_amount(active_order_amount, network_key=from_asset)}\n"
-            f"📍 На адрес:\n{short_address(active_order_address)}\n\n"
-            f"🎯 Получишь BTC на:\n{short_address(btc_address)}\n\n"
+            f"📍 На адрес: {format_code_address(active_order_address)}\n\n"
+            f"🎯 Получишь BTC на:\n{format_code_address(btc_address)}\n\n"
             f"⏰ Ордер действителен: {time_text}\n\n"
             f"💡 Дождись истечения текущего ордера или завершения обмена",
             parse_mode="HTML",
@@ -3106,18 +3128,18 @@ async def cmd_execute(message: Message):
             if amount < min_limit:
                 await message.answer(
                     f"❌ Сумма меньше минимального лимита FixedFloat\n\n"
-                    f"Минимальная сумма для {from_asset}: {min_limit:.2f} USDT\n"
-                    f"Сумма в плане: {amount:.2f} USDT\n\n"
-                    f"💡 Создай новый план с суммой от {min_limit:.2f} USDT"
+                    f"Минимальная сумма для {from_asset}: {format_amount(min_limit)} USDT\n"
+                    f"Сумма в плане: {format_amount(amount)} USDT\n\n"
+                    f"💡 Создай новый план с суммой от {format_amount(min_limit)} USDT"
                 )
                 return
             
             if amount > effective_max:
                 await message.answer(
                     f"❌ Сумма больше максимального лимита\n\n"
-                    f"Максимальная сумма для {from_asset}: {effective_max:.2f} USDT\n"
-                    f"Сумма в плане: {amount:.2f} USDT\n\n"
-                    f"💡 Создай новый план с суммой до {effective_max:.2f} USDT"
+                    f"Максимальная сумма для {from_asset}: {format_amount(effective_max)} USDT\n"
+                    f"Сумма в плане: {format_amount(amount)} USDT\n\n"
+                    f"💡 Создай новый план с суммой до {format_amount(effective_max)} USDT"
                 )
                 return
             
@@ -3263,7 +3285,7 @@ async def cmd_execute(message: Message):
                     f"🔗 Ордер: {format_order_link(order_id)}\n"
                     f"\n"
                     f"💵 Отправлено: {format_order_amount(required_amount, network_key=from_asset)}\n"
-                    f"📍 На адрес: {short_address(deposit_address)}\n\n"
+                    f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
                 )
                 
                 if DRY_RUN:
@@ -3363,8 +3385,8 @@ async def cmd_execute(message: Message):
                 f"✅ Ордер создан!\n\n"
                 f"🔗 Ордер: {format_order_link(order_id)}\n\n"
                 f"💵 Отправь: {format_order_amount(deposit_amount, deposit_code, from_asset)}\n"
-                f"📍 На адрес:\n{short_address(deposit_address)}\n\n"
-                f"🎯 Получишь BTC на:\n{short_address(btc_address)}\n\n"
+                f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
+                f"🎯 Получишь BTC на:\n{format_code_address(btc_address)}\n\n"
                 f"⏰ Ордер действителен: {time_text}\n\n"
                 f"💡 Для автоматической отправки:\n"
                 f"1. Настрой кошелёк: /setwallet\n"
@@ -3436,19 +3458,20 @@ async def cmd_status(message: Message):
         minutes_left = max(0, (time_left % 3600) // 60)
         
         status_emoji = "✅" if active else "⏸"
-        status_name = "Активен" if active else "Пауза"
+        status_name = "Активен" if active else "На паузе"
         
-        masked_addr = short_address(btc_address)
+        btc_display = format_code_address(btc_address)
         network_label = get_network_label(from_asset) or from_asset
+        interval_compact = f"{interval_hours}ч"
+        amount_compact = f"{format_amount(float(amount))} USDT"
         
         status_text += (
             f"━━━━━━━━━━━━━━\n"
             f"📌 План {idx}\n"
-            f"{status_emoji} {network_label} - {status_name}\n"
-            f"💵 Сумма: {format_order_amount(amount, network_key=from_asset)}\n"
-            f"⏱ Интервал: раз в {format_interval(interval_hours)}\n"
-            f"🎯 BTC: {masked_addr}\n"
-            f"⏰ Следующая покупка через: {hours_left}ч {minutes_left}мин\n"
+            f"{status_emoji} {escape_html(network_label)} — {status_name}\n"
+            f"💵 {amount_compact} | каждые {interval_compact}\n"
+            f"🎯 BTC: {btc_display}\n"
+            f"⏱ Следующая покупка: {hours_left}ч {minutes_left}мин\n"
         )
         
         # Проверяем есть ли активный ордер (и не истёк ли он)
@@ -3472,23 +3495,18 @@ async def cmd_status(message: Message):
                 status_line = (
                     "USDT отправлены, обмен выполняется"
                     if transfer_tx_hash
-                    else "❗ требуется ручная отправка" if order_state in {"failed", "blocked"} else "ожидается отправка USDT"
+                    else "❗ Требуется ручная отправка" if order_state in {"failed", "blocked"} else "ожидается отправка USDT"
                 )
-                short_order_address = short_address(order_address or "—")
                 formatted_order_amount = format_order_amount(order_amount, network_key=from_asset)
-                amount_line = (
-                    f"Отправлено: {formatted_order_amount}"
-                    if transfer_tx_hash
-                    else f"Отправь вручную: {formatted_order_amount}" if order_state in {"failed", "blocked"} else f"Отправь: {formatted_order_amount}"
-                )
+                amount_line = formatted_order_amount
                 
                 status_text += (
-                    f"\n🔥 Активный ордер:\n"
-                    f"Статус: {status_line}\n"
-                    f"🔗 Ордер: {format_order_link(order_id)}\n"
-                    f"{amount_line}\n"
-                    f"На адрес: {short_order_address}\n"
-                    f"Истекает через: {order_time_text}\n"
+                    f"\n🔥 Ордер:\n"
+                    f"{status_line}\n"
+                    f"🔗 {format_order_link(order_id)}\n"
+                    f"💵 {amount_line}\n"
+                    f"📍 {format_code_address(order_address or '—')}\n"
+                    f"⏳ {order_time_text}\n"
                 )
             else:
                 # Ордер истёк - очищаем его в фоне
@@ -3504,17 +3522,12 @@ async def cmd_status(message: Message):
                 # Запускаем очистку в фоне (не блокируем ответ)
                 asyncio.create_task(cleanup_expired_order(plan_id))
         
-        status_text += (
-            f"\nУправление этим планом:\n"
-            f"/execute_{idx} - выполнить сейчас\n"
-        )
-        
+        status_text += f"\nКоманды: /execute_{idx} "
         if active:
-            status_text += f"/pause_{idx} - приостановить\n"
+            status_text += f"/pause_{idx} "
         else:
-            status_text += f"/resume_{idx} - возобновить\n"
-        
-        status_text += f"/delete_{idx} - удалить\n"
+            status_text += f"/resume_{idx} "
+        status_text += f"/delete_{idx}\n"
     
     await message.answer(
         status_text,
@@ -3859,13 +3872,13 @@ async def cmd_setwallet(message: Message):
         
         await message.answer(
             f"✅ Кошелёк инициализирован успешно!\n\n"
-            f"📍 Адрес: {short_address(wallet_address)}\n\n"
+            f"📍 Адрес: {format_code_address(wallet_address)}\n\n"
             f"🔐 Безопасность:\n"
             f"• Wallet.json используется только для первичного импорта\n"
             f"• Приватный ключ зашифрован и сохранён в keystore\n\n"
             f"⚠️ УДАЛИ все резервные копии wallet.json с приватным ключом!\n\n"
             f"💡 Автоотправка активирована для всех сетей",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         
         logger.info(f"Wallet initialized for user {user_id}: address={wallet_address}")
@@ -4086,7 +4099,7 @@ async def cmd_walletstatus(message: Message):
         return
 
     status_text = f"💼 Wallet Status:\n\n"
-    status_text += f"📍 Address:\n{short_address(wallet_address)}\n\n"
+    status_text += f"📍 Address:\n{format_code_address(wallet_address)}\n\n"
     status_text += f"Balances on all networks:\n\n"
 
     from networks import NETWORKS
@@ -4254,9 +4267,9 @@ async def cmd_setdca(message: Message):
             if amount < min_limit:
                 await message.answer(
                     f"❌ Сумма меньше минимального лимита FixedFloat\n\n"
-                    f"Минимум: {min_limit:.2f} USDT (сетевой лимит FixedFloat)\n"
-                    f"Твоя сумма: {amount:.2f} USDT\n\n"
-                    f"💡 Увеличь сумму до минимум {min_limit:.2f} USDT"
+                    f"Минимум: {format_amount(min_limit)} USDT (сетевой лимит FixedFloat)\n"
+                    f"Твоя сумма: {format_amount(amount)} USDT\n\n"
+                    f"💡 Увеличь сумму до минимум {format_amount(min_limit)} USDT"
                 )
                 return
             
@@ -4264,7 +4277,7 @@ async def cmd_setdca(message: Message):
                 await message.answer(
                     f"❌ Сумма больше максимального лимита\n\n"
                     f"Максимум: 500 USDT (ограничено настройками бота)\n"
-                    f"Твоя сумма: {amount:.2f} USDT\n\n"
+                    f"Твоя сумма: {format_amount(amount)} USDT\n\n"
                     f"💡 Уменьши сумму до максимум 500 USDT"
                 )
                 return
@@ -4391,8 +4404,8 @@ async def cmd_setdca(message: Message):
                     # BTC адрес отличается - не наследуем ордер, создаём новый план
                     await message.answer(
                         f"⚠️ Найден активный ордер от удалённого плана, но BTC адрес отличается!\n\n"
-                        f"Старый адрес: {short_address(old_btc_address)}\n"
-                        f"Новый адрес: {short_address(btc_address)}\n\n"
+                        f"Старый адрес: {format_code_address(old_btc_address)}\n"
+                        f"Новый адрес: {format_code_address(btc_address)}\n\n"
                         f"💡 Создаю новый план без наследования ордера.\n"
                         f"Старый ордер остаётся активным на FixedFloat."
                     )
@@ -4422,7 +4435,7 @@ async def cmd_setdca(message: Message):
             await db.commit()
             action = "создан"
         
-        masked_addr = short_address(btc_address)
+        masked_addr = format_code_address(btc_address)
         
         # Форматируем интервал
         interval_text = format_interval(interval)
@@ -4513,7 +4526,7 @@ async def order_monitor():
                                 f'✅ Ордер завершён\n\n'
                                 f"🔗 Ордер: {format_order_link(order_id)}\n"
                                 f"💵 Сумма: {format_order_amount(amount, network_key=network_key)}\n"
-                                f"🎯 BTC адрес:\n{short_address(btc_address)}\n\n"
+                                f"🎯 BTC адрес:\n{format_code_address(btc_address)}\n\n"
                                 f'TX: <a href="https://blockchair.com/bitcoin/transaction/{safe_btc_txid}">TX ID</a>'
                             )
                             await update_order_progress_message(int(user_id), str(order_id), completion_text)
@@ -4527,7 +4540,7 @@ async def order_monitor():
                                 f'⏳ Ордер выполнен, ожидаем BTC транзакцию...\n\n'
                                 f"🔗 Ордер: {format_order_link(order_id)}\n"
                                 f"💵 Сумма: {format_order_amount(amount, network_key=network_key)}\n"
-                                f"🎯 BTC адрес:\n{short_address(btc_address)}"
+                                f"🎯 BTC адрес:\n{format_code_address(btc_address)}"
                             )
                             await update_order_progress_message(int(user_id), str(order_id), waiting_text)
                         logger.info(f"Order {order_id} marked as completed for user {user_id}")
