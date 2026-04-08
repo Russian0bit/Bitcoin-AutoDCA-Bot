@@ -182,15 +182,12 @@ _web3_cache: Dict[str, Any] = {}
 _balances_cache: Dict[tuple[str, str], Dict[str, Any]] = {}
 CACHE_TTL = 20
 
-# Маппинг пользовательских названий сетей на коды FixedFloat API
-NETWORK_MAP = {
+# Runtime-копия, может обновляться по данным API на старте
+NETWORK_CODES = {
     "USDT-ARB": "USDTARBITRUM",
     "USDT-BSC": "USDTBSC",
-    "USDT-POLYGON": "USDTPOLYGON",
+    "USDT-POLYGON": "USDTMATIC",
 }
-
-# Runtime-копия, может обновляться по данным API на старте
-NETWORK_CODES = NETWORK_MAP.copy()
 
 FIXEDFLOAT_ASSET_MAP = {
     "USDT-ARB": "USDTARB",
@@ -365,7 +362,12 @@ def normalize_code(value: str) -> str:
 
 def get_fixedfloat_symbol(user_symbol: str) -> str:
     normalized_symbol = normalize_network_key(user_symbol)
-    return NETWORK_MAP.get(normalized_symbol) or NETWORK_CODES.get(normalized_symbol, "")
+    network_map = {
+        "USDT-ARB": "USDTARBITRUM",
+        "USDT-BSC": "USDTBSC",
+        "USDT-POLYGON": "USDTMATIC",
+    }
+    return network_map.get(normalized_symbol) or NETWORK_CODES.get(normalized_symbol, "")
 
 
 def validate_btc_address(address: str) -> bool:
@@ -2465,9 +2467,7 @@ async def cmd_start(message: Message):
         f"/setdca — создать DCA план\n\n"
         f"⚙️ Команды:\n"
         f"/status — статус планов\n"
-        f"/markets — сети и лимиты\n"
-        f"/networks — доступные сети\n"
-        f"/limits — лимиты обмена\n\n"
+        f"/limits — сети и лимиты\n\n"
         f"ℹ️ Информация:\n"
         f"/help — подробная справка\n"
         f"/walletstatus — баланс кошелька\n"
@@ -2510,11 +2510,9 @@ async def cmd_help(message: Message):
         "/setwallet — настроить кошелёк\n"
         "/setdca — создать DCA план\n"
         "/status — статус планов\n"
-        "/markets — сети и лимиты\n"
-        "/limits — лимиты обмена\n"
+        "/limits — сети и лимиты\n"
         "/history — история операций\n"
         "/walletstatus — баланс EVM-кошелька\n"
-        "/networks — доступные сетей\n\n"
         "—\n\n"
         "🔄 Замена EVM-кошелька (если нужен другой кошелек):\n\n"
         "1. Выполни /deletewallet\n"
@@ -2606,7 +2604,7 @@ async def cmd_limits(message: Message):
         network_map = {
             "USDT-ARB": "USDTARBITRUM",
             "USDT-BSC": "USDTBSC",
-            "USDT-POLYGON": "USDTPOLYGON",
+            "USDT-POLYGON": "USDTMATIC",
         }
         bot_max = 500
         blocks = []
@@ -2697,8 +2695,13 @@ async def fetch_fixedfloat_available_networks() -> tuple[dict[str, str], bool]:
 
 
 def is_network_available_on_fixedfloat(network_key: str, available_networks: dict[str, str]) -> bool:
+    network_map = {
+        "USDT-ARB": "USDTARBITRUM",
+        "USDT-BSC": "USDTBSC",
+        "USDT-POLYGON": "USDTMATIC",
+    }
     candidates = {
-        normalize_code(NETWORK_MAP.get(network_key)),
+        normalize_code(network_map.get(network_key)),
         normalize_code(FIXEDFLOAT_ASSET_MAP.get(network_key)),
     }
     candidates.discard("")
@@ -2717,83 +2720,6 @@ def is_network_available_on_fixedfloat(network_key: str, available_networks: dic
             ):
                 return True
     return False
-
-
-@dp.message(Command("networks"))
-async def cmd_networks(message: Message):
-    """
-    Команда /networks - показать все доступные сети USDT с проверкой на FixedFloat.
-    Проверяет в реальном времени какие сети доступны и работают.
-    """
-    try:
-        await message.answer("⏳ Проверяю доступность сетей на FixedFloat...")
-
-        available_networks, api_available = await fetch_fixedfloat_available_networks()
-
-        text = "🌐 Доступные сети USDT:\n\n"
-        for network_key in NETWORK_MAP.keys():
-            available = is_network_available_on_fixedfloat(network_key, available_networks) if api_available else False
-            text += f"{'✅' if available else '❌'} {network_key}\n"
-        if not api_available:
-            text += "\n⚠️ Не удалось проверить FixedFloat API"
-
-        await message.answer(text, parse_mode=None)
-
-    except Exception as e:
-        logger.error(f"Ошибка получения списка сетей: {e}")
-        await message.answer(f"❌ Ошибка получения списка сетей: {escape_html(e)}")
-
-
-@dp.message(Command("markets"))
-async def cmd_markets(message: Message):
-    """
-    Команда /markets - показать доступные сети и лимиты USDT -> BTC.
-    """
-    try:
-        await message.answer("⏳ Получаю рынки и лимиты...")
-        available_networks, api_available = await fetch_fixedfloat_available_networks()
-        text = "🌐 Доступные сети и лимиты:\n\n"
-        for network_key in NETWORK_MAP.keys():
-            available = is_network_available_on_fixedfloat(network_key, available_networks) if api_available else False
-            text += f"🔹 {network_key}\n"
-            if not api_available:
-                text += "❌ FixedFloat API недоступен\n\n"
-                continue
-            if not available:
-                text += "❌ Сеть недоступна на FixedFloat\n\n"
-                continue
-
-            api_symbol = get_fixedfloat_symbol(network_key)
-            try:
-                data = await ff_request_async("price", {
-                    "type": "fixed",
-                    "fromCcy": api_symbol,
-                    "toCcy": "BTC",
-                    "direction": "from",
-                    "amount": 50,
-                })
-                from_info = data.get("from", {}) or {}
-                to_info = data.get("to", {}) or {}
-                min_amt = from_info.get("min")
-                to_amount = to_info.get("amount")
-                if to_amount:
-                    rate_value = 50.0 / float(to_amount)
-                    rate_text = f"{rate_value:,.2f}"
-                else:
-                    rate_text = "—"
-                text += (
-                    f"Мин: {format_amount(float(min_amt)) if min_amt is not None else '—'} USDT\n"
-                    f"Макс: 500 USDT\n"
-                    f"Курс: 1 BTC = {rate_text} USDT\n\n"
-                )
-            except Exception as e:
-                logger.error(f"/markets: ошибка получения лимитов для {network_key} ({api_symbol}): {e}")
-                text += f"❌ Не удалось получить лимиты ({escape_html(e)})\n\n"
-
-        await message.answer(text, parse_mode=None)
-    except Exception as e:
-        logger.error(f"Ошибка /markets: {e}")
-        await message.answer(f"❌ Ошибка получения рынков: {escape_html(e)}")
 
 
 @dp.message(lambda message: message.text and message.text.startswith("/execute"))
