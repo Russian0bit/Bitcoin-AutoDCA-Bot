@@ -2602,41 +2602,75 @@ async def cmd_limits(message: Message):
     """
     try:
         await message.answer("⏳ Получаю лимиты...")
+        network_order = ["USDT-ARB", "USDT-BSC", "USDT-POLYGON"]
+        network_map = {
+            "USDT-ARB": "USDTARBITRUM",
+            "USDT-BSC": "USDTBSC",
+            "USDT-POLYGON": "USDTPOLYGON",
+        }
+        bot_max = 500
+        blocks = []
 
-        limits_text = "💱 Лимиты обмена USDT → BTC\n\n"
-        for network_name in NETWORK_MAP.keys():
-            api_symbol = get_fixedfloat_symbol(network_name)
-            try:
-                data = await ff_request_async("price", {
-                    "type": "fixed",
-                    "fromCcy": api_symbol,
-                    "toCcy": "BTC",
-                    "direction": "from",
-                    "amount": 50,
-                })
-                from_info = data.get("from", {}) or {}
-                to_info = data.get("to", {}) or {}
-                min_amt = from_info.get("min")
-                to_amount = to_info.get("amount")
-                if to_amount:
-                    rate_value = 50.0 / float(to_amount)
-                    rate_formatted = f"{rate_value:,.2f}"
-                else:
-                    rate_formatted = "—"
+        for network_name in network_order:
+            api_symbol = network_map.get(network_name, network_name)
+            min_value = None
+            rate_value = None
+            available = False
 
-                limits_text += (
-                    f"🔹 {network_name}\n"
-                    f"Мин: {format_amount(float(min_amt)) if min_amt is not None else '—'} USDT\n"
-                    f"Макс: 500 USDT\n"
-                    f"Курс: 1 BTC = {rate_formatted} USDT\n\n"
+            for attempt in range(2):
+                try:
+                    data = await ff_request_async(
+                        "price",
+                        {
+                            "type": "fixed",
+                            "fromCcy": api_symbol,
+                            "toCcy": "BTC",
+                            "direction": "from",
+                            "amount": 50,
+                        },
+                    )
+                    from_info = data.get("from", {}) or {}
+                    to_info = data.get("to", {}) or {}
+                    min_raw = from_info.get("min")
+                    to_amount = to_info.get("amount")
+
+                    min_value = float(min_raw) if min_raw is not None else None
+                    if to_amount is not None:
+                        to_amount_float = float(to_amount)
+                        rate_value = (50.0 / to_amount_float) if to_amount_float != 0 else 0
+                    else:
+                        rate_value = None
+
+                    if min_value is not None and rate_value is not None and rate_value != 0:
+                        available = True
+                    break
+                except Exception as e:
+                    logger.error(
+                        f"Ошибка получения лимитов для {network_name} ({api_symbol}), попытка {attempt + 1}/2: {e}"
+                    )
+                    if attempt == 1:
+                        available = False
+
+            if available:
+                blocks.append(
+                    f"🟢 {network_name}\n"
+                    f"Статус: доступна\n"
+                    f"Мин: {format_amount(min_value)} USDT\n"
+                    f"Макс: {bot_max} USDT (лимит бота)\n"
+                    f"Курс: 1 BTC = {rate_value:,.2f} USDT"
                 )
-            except Exception as e:
-                logger.error(f"Ошибка получения лимитов для {network_name} ({api_symbol}): {e}")
-                limits_text += (
-                    f"🔹 {network_name}\n"
-                    f"❌ Не удалось получить лимиты ({escape_html(e)})\n\n"
+            else:
+                blocks.append(
+                    f"🔴 {network_name}\n"
+                    f"Статус: недоступна\n"
+                    f"Причина: Сеть временно недоступна"
                 )
 
+        limits_text = (
+            "🌐 Лимиты и сети (USDT → BTC)\n\n"
+            + "\n\n".join(blocks)
+            + "\n\n💡 Данные обновляются в реальном времени"
+        )
         await message.answer(limits_text, parse_mode=None)
 
     except Exception as e:
