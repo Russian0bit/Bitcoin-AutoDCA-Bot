@@ -79,13 +79,10 @@ Windows (PowerShell):
 
 Создайте текстовый файл .env
 
-DCA_TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-
-ADMIN_USER_ID=123456789
-
-FF_API_KEY=your_fixedfloat_api_key
-
-FF_API_SECRET=your_fixedfloat_api_secret
+```DCA_TELEGRAM_BOT_TOKEN=your_telegram_bot_token```
+```ADMIN_USER_ID=123456789```
+```FF_API_KEY=your_fixedfloat_api_key```
+```FF_API_SECRET=your_fixedfloat_api_secret```
 
 Где взять:
 
