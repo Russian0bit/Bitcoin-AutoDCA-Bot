@@ -2652,15 +2652,12 @@ async def cmd_limits(message: Message):
             if available:
                 blocks.append(
                     f"🟢 {network_name}\n"
-                    f"Статус: доступна\n"
                     f"Мин: {format_amount(min_value)} USDT\n"
-                    f"Макс: {bot_max} USDT (лимит бота)\n"
-                    f"Курс: 1 BTC = {rate_value:,.2f} USDT"
+                    f"Макс: {bot_max} USDT (ограничено ботом)"
                 )
             else:
                 blocks.append(
                     f"🔴 {network_name}\n"
-                    f"Статус: недоступна\n"
                     f"Причина: Сеть временно недоступна"
                 )
 
@@ -3417,21 +3414,19 @@ async def cmd_status(message: Message):
         hours_left = max(0, time_left // 3600)
         minutes_left = max(0, (time_left % 3600) // 60)
         
-        status_emoji = "✅" if active else "⏸"
-        status_name = "Активен" if active else "На паузе"
+        status_emoji = "🟢" if active else "🔴"
+        status_name = "Активен" if active else "Не активен"
         
-        btc_display = format_code_address(btc_address)
+        btc_display = short_address(btc_address)
         network_label = get_network_label(from_asset) or from_asset
-        interval_compact = f"{interval_hours}ч"
-        amount_compact = f"{format_amount(float(amount))} USDT"
+        amount_compact = f"{format_amount(float(amount))} USDT / {interval_hours}ч"
         
         status_text += (
-            f"━━━━━━━━━━━━━━\n"
             f"📌 План {idx}\n"
             f"{status_emoji} {escape_html(network_label)} — {status_name}\n"
-            f"💵 {amount_compact} | каждые {interval_compact}\n"
+            f"💰 {amount_compact}\n"
             f"🎯 BTC: {btc_display}\n"
-            f"⏱ Следующая покупка: {hours_left}ч {minutes_left}мин\n"
+            f"⏱ Покупка через: {hours_left}ч {minutes_left}м\n"
         )
         
         # Проверяем есть ли активный ордер (и не истёк ли он)
@@ -3482,12 +3477,13 @@ async def cmd_status(message: Message):
                 # Запускаем очистку в фоне (не блокируем ответ)
                 asyncio.create_task(cleanup_expired_order(plan_id))
         
-        status_text += f"\nКоманды: /execute_{idx} "
+        status_text += f"\n⚙️ Управление:\n"
+        status_text += f"▶️ Выполнить: /execute_{idx}\n"
         if active:
-            status_text += f"/pause_{idx} "
+            status_text += f"⏸ Пауза: /pause_{idx}\n"
         else:
-            status_text += f"/resume_{idx} "
-        status_text += f"/delete_{idx}\n"
+            status_text += f"▶️ Возобновить: /resume_{idx}\n"
+        status_text += f"❌ Удалить: /delete_{idx}\n\n"
     
     await message.answer(
         status_text,
