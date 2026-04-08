@@ -185,12 +185,30 @@ BTC на ваш адрес
 
 больше сетей и бирж
 
-Добавление множества BTC-адресов для получения
+добавление множества BTC-адресов для получения
 
 # 📄 Лицензия
 
-MIT License
+This project is licensed under the MIT License — see the LICENSE file for details.
 
 # ⚠️ Отказ от ответственности
 
-Проект предоставляется «как есть». Используйте на свой риск.
+This software is provided "as is", without warranty of any kind.
+
+The author is not responsible for any financial losses, damages, or misuse of this software.
+
+Use at your own risk.
+
+# 💸 Financial Risk Warning
+
+Trading cryptocurrencies involves significant risk.
+
+This bot does not guarantee profits and may result in financial loss.
+
+Always do your own research (DYOR) before using this software.
+
+# 🔐 Security Notice
+
+Never share your private keys.
+
+The author is not responsible for lost funds due to compromised credentials or user mistakes.
