@@ -118,7 +118,7 @@ Windows:
 ## 7) Инициализация
 
 В Telegram:
-/setwallet
+```/setwallet```
 
 После этого создастся keystore и пароль сохранится.
 УДАЛИТЕ файл wallet.json
