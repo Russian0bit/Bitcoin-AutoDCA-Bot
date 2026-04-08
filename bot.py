@@ -2653,7 +2653,8 @@ async def cmd_limits(message: Message):
                 blocks.append(
                     f"🟢 {network_name}\n"
                     f"Мин: {format_amount(min_value)} USDT\n"
-                    f"Макс: {bot_max} USDT (ограничено ботом)"
+                    f"Макс: {bot_max} USDT (ограничено ботом)\n"
+                    f"Курс: 1 BTC = {rate_value:,.2f} USDT"
                 )
             else:
                 blocks.append(
@@ -3426,7 +3427,7 @@ async def cmd_status(message: Message):
             f"{status_emoji} {escape_html(network_label)} — {status_name}\n"
             f"💰 {amount_compact}\n"
             f"🎯 BTC: {btc_display}\n"
-            f"⏱ Покупка через: {hours_left}ч {minutes_left}м\n"
+            f"⏱ До покупки: {hours_left}ч {minutes_left}м\n"
         )
         
         # Проверяем есть ли активный ордер (и не истёк ли он)
@@ -3480,7 +3481,7 @@ async def cmd_status(message: Message):
         status_text += f"\n⚙️ Управление:\n"
         status_text += f"▶️ Выполнить: /execute_{idx}\n"
         if active:
-            status_text += f"⏸ Пауза: /pause_{idx}\n"
+            status_text += f"⏸️ Пауза: /pause_{idx}\n"
         else:
             status_text += f"▶️ Возобновить: /resume_{idx}\n"
         status_text += f"❌ Удалить: /delete_{idx}\n\n"
