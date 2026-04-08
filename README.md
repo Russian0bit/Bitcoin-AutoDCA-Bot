@@ -1,6 +1,7 @@
 #Cryptobotan Bitcoin AutoDCA Bot
 
 Telegram-бот для автоматической DCA-покупки BTC через FixedFloat.
+
 Работает локально на вашем устройстве (Windows / macOS / Linux).
 
 ⚡ Возможности
