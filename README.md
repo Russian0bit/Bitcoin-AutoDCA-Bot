@@ -82,7 +82,8 @@ python3 -m venv venv && source venv/bin/activate
 Windows (PowerShell):
 
 ```bash
-python -m venv venv && venv\Scripts\activate
+python -m venv venv
+venv\Scripts\Activate.ps1
 ```
 
 ## 3) Установка зависимостей
