@@ -98,6 +98,7 @@ API ключи → https://ff.io
 ## 5) Настройка кошелька (для Auto режима)
 
 Создайте файл Wallet.json с содержимым
+
 {
   
   "private_key": "0xYOUR_PRIVATE_KEY",
