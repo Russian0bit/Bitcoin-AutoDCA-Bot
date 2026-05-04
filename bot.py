@@ -9,6 +9,7 @@ import sys
 import hmac
 import hashlib
 import json
+import math
 import time
 import re
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -255,17 +256,7 @@ def escape_html(text: str) -> str:
 def format_balance(value: float) -> str:
     if value is None:
         return "—"
-    if value < 1e-8:
-        if value < 1e-12:
-            return "~0"
-        return "< 0.00000001"
-    if value < 0.0001:
-        return f"{value:.8f}"
-    if value < 0.01:
-        return f"{value:.6f}"
-    if value < 1:
-        return f"{value:.4f}"
-    return f"{value:.2f}"
+    return f"{float(value):.2f}"
 
 
 def short_address(addr: str) -> str:
@@ -279,12 +270,9 @@ def short_address(addr: str) -> str:
 
 def format_amount(x: float) -> str:
     if x is None:
-        return "0"
+        return "0.00"
     value = float(x)
-    if value >= 1:
-        return f"{value:.2f}"
-    formatted = f"{value:.8f}".rstrip("0").rstrip(".")
-    return formatted if formatted else "0"
+    return f"{value:.2f}"
 
 
 def normalize_network_key(value: str) -> str:
@@ -354,6 +342,68 @@ def format_code_address(address: Any) -> str:
     return f"<code>{safe_address}</code>" if safe_address else "<code>—</code>"
 
 
+NOTIFICATION_REASONS = {
+    "offline": "Бот был офлайн в момент исполнения",
+    "window_expired": "Окно исполнения было пропущено",
+    "insufficient": "Недостаточно средств на кошельке",
+    "order_expired": "Ордер истёк до оплаты",
+}
+
+
+def get_notification_reason(reason_code: str) -> str:
+    return NOTIFICATION_REASONS.get(reason_code, "Неизвестная причина")
+
+
+def format_notification_amount(amount: Any) -> str:
+    amount_raw = amount
+    if isinstance(amount, str):
+        parts = amount.strip().split()
+        if parts:
+            amount_raw = parts[0]
+    try:
+        return f"{float(amount_raw):.2f}"
+    except (TypeError, ValueError):
+        return escape_html(amount)
+
+
+def format_order_deadline(expires_at: Optional[int], now_ts: Optional[int] = None) -> str:
+    if now_ts is None:
+        now_ts = int(time.time())
+    if not expires_at:
+        return "~0 минут"
+    remaining = max(0, int(expires_at) - int(now_ts))
+    minutes_left = math.ceil(remaining / 60)
+    return f"~{minutes_left} минут"
+
+
+def extract_order_expires_at(order_data: dict, fallback_now: Optional[int] = None) -> int:
+    if fallback_now is None:
+        fallback_now = int(time.time())
+
+    candidates = [
+        order_data.get("expires_at"),
+        order_data.get("expiresAt"),
+        order_data.get("expire"),
+        order_data.get("expires"),
+        (order_data.get("time", {}) or {}).get("expiration"),
+        (order_data.get("time", {}) or {}).get("expires_at"),
+        (order_data.get("time", {}) or {}).get("expiresAt"),
+        (order_data.get("time", {}) or {}).get("expire"),
+    ]
+    for candidate in candidates:
+        try:
+            expires_at = int(float(candidate))
+        except (TypeError, ValueError):
+            continue
+        if expires_at > 0:
+            return expires_at
+
+    time_left = (order_data.get("time", {}) or {}).get("left", 0)
+    if not isinstance(time_left, (int, float)) or time_left < 0:
+        time_left = 0
+    return int(fallback_now) + int(time_left)
+
+
 def normalize_code(value: str) -> str:
     if not value:
         return ""
@@ -404,11 +454,21 @@ def is_pending_tx_error(error_msg: str) -> bool:
     return msg.startswith("TX_PENDING:") or msg.startswith("APPROVE_TX_PENDING:")
 
 
+def is_insufficient_auto_send_error(error_msg: str) -> bool:
+    """True if auto-send failed because wallet funds were insufficient."""
+    lower = (error_msg or "").lower()
+    return (
+        "insufficient usdt balance" in lower
+        or "balance for gas" in lower
+        or "insufficient funds for gas" in lower
+    )
+
+
 def _extract_amount_from_error(error_msg: str, label: str, asset: str) -> str:
     """Extract amount from lines like 'Required: 1.234000 USDT'."""
     pattern = rf"{label}:\s*([0-9]+(?:\.[0-9]+)?)\s*{re.escape(asset)}"
     match = re.search(pattern, error_msg, flags=re.IGNORECASE)
-    return match.group(1) if match else ""
+    return format_notification_amount(match.group(1)) if match else ""
 
 
 def humanize_auto_send_error(error_msg: str, network_key: str) -> str:
@@ -421,30 +481,10 @@ def humanize_auto_send_error(error_msg: str, network_key: str) -> str:
     native_token = get_network_config(network_key)["native_token"]
 
     if "insufficient usdt balance" in lower:
-        required = _extract_amount_from_error(raw, "Required", "USDT")
-        available = _extract_amount_from_error(raw, "Available", "USDT")
-        shortage = _extract_amount_from_error(raw, "Shortage", "USDT")
-        if required and available and shortage:
-            return (
-                "Недостаточно USDT на кошельке.\n"
-                f"Требуется: {required} USDT\n"
-                f"Доступно: {available} USDT\n"
-                f"Не хватает: {shortage} USDT"
-            )
-        return "Недостаточно USDT на кошельке для автоматической отправки."
+        return get_notification_reason("insufficient")
 
     if "balance for gas" in lower or "insufficient funds for gas" in lower:
-        required = _extract_amount_from_error(raw, "Required", native_token)
-        available = _extract_amount_from_error(raw, "Available", native_token)
-        shortage = _extract_amount_from_error(raw, "Shortage", native_token)
-        if required and available and shortage:
-            return (
-                f"Недостаточно {native_token} для комиссии сети.\n"
-                f"Требуется: {required} {native_token}\n"
-                f"Доступно: {available} {native_token}\n"
-                f"Не хватает: {shortage} {native_token}"
-            )
-        return f"Недостаточно {native_token} для оплаты комиссии сети."
+        return get_notification_reason("insufficient")
 
     if "wallet not configured" in lower:
         return "Кошелек не настроен. Выполни /setwallet."
@@ -460,13 +500,10 @@ def humanize_auto_send_error(error_msg: str, network_key: str) -> str:
         or "when sending a str, it must be a hex string" in lower
         or "invalid deposit address format" in lower
     ):
-        return (
-            f"Неверный формат адреса/ключа для сети {network_key}.\n"
-            "Обычно это означает, что адрес депозита не подходит для выбранной сети или кошелек настроен некорректно."
-        )
+        return f"Неверный формат адреса для сети {network_key}."
 
     if is_retryable_network_error(raw):
-        return f"Временная ошибка сети {network_key} (RPC/интернет). Попробуй повторить через 1-2 минуты."
+        return f"Временная ошибка сети {network_key}."
 
     short_raw = raw[:180]
     return f"Техническая ошибка авто-отправки в сети {network_key}. Детали: {short_raw}"
@@ -477,27 +514,31 @@ def build_auto_send_failed_notification(
     network_key: str,
     required_amount: float,
     deposit_address: str,
-    time_text: str,
+    order_expires: Optional[int],
     error_msg: str,
 ) -> str:
     """Build clear fallback message when auto-send fails."""
     human_error = escape_html(humanize_auto_send_error(error_msg, network_key))
     network_label = escape_html(get_network_label(network_key) or network_key)
-    safe_time_text = escape_html(time_text)
+    deadline_text = escape_html(format_order_deadline(order_expires))
     return (
-        "❌ Не удалось автоматически отправить USDT\n\n"
+        "❌ Статус: Авто-отправка не выполнена\n\n"
         f"🔗 Ордер: {format_order_link(order_id)}\n"
         f"🌐 Сеть: {network_label}\n\n"
+        f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n"
+        f"⏰ До истечения: {deadline_text}\n\n"
         f"Причина:\n{human_error}\n\n"
-        f"💵 Отправить вручную: {format_order_amount(required_amount, network_key=network_key)}\n"
-        f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
-        f"⏰ Ордер действителен: {safe_time_text}"
+        f"📍 Адрес: {format_code_address(deposit_address)}\n\n"
+        "Действие:\n"
+        "Оплатите ордер на указанный адрес до дедлайна."
     )
 
 
 def format_scheduled_time(ts: int) -> str:
     """Format Unix timestamp for user-facing notifications."""
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(int(ts)))
+    months = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+    dt = time.localtime(int(ts))
+    return f"{dt.tm_mday} {months[dt.tm_mon - 1]} {dt.tm_hour:02d}:{dt.tm_min:02d}"
 
 
 def calculate_next_run_preserving_schedule(scheduled_time: int, interval_hours: int, now_ts: int) -> int:
@@ -527,6 +568,11 @@ def is_order_expired(order_expires: Optional[int], now_ts: Optional[int] = None)
 
 async def get_execute_command_hint(user_id: int, plan_id: int) -> str:
     """Return user-facing execute command for a specific plan."""
+    return f"/execute_{int(plan_id)}"
+
+
+async def get_plan_display_number(user_id: int, plan_id: int) -> int:
+    """Return stable UI number for a plan without using it as command identity."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT id FROM dca_plans WHERE user_id = ? AND deleted = 0 ORDER BY id",
@@ -535,44 +581,130 @@ async def get_execute_command_hint(user_id: int, plan_id: int) -> str:
             rows = await cur.fetchall()
     for idx, row in enumerate(rows, start=1):
         if row[0] == plan_id:
-            return f"/execute_{idx}"
-    return "/execute"
+            return idx
+    return int(plan_id)
 
 
-def build_missed_dca_cycle_notification(scheduled_time: int, execute_command: str) -> str:
+def build_missed_dca_cycle_notification(
+    *,
+    plan_number: int,
+    network_key: str,
+    amount: Any,
+    scheduled_time: int,
+    execute_command: str,
+    reason_code: str = "window_expired",
+) -> str:
     """Notification text for skipped missed cycle."""
+    network_label = escape_html(network_key)
+    reason_text = escape_html(get_notification_reason(reason_code))
     return (
-        "⚠️ Платёж по DCA пропущен\n\n"
-        f"Запланированный платёж на {format_scheduled_time(scheduled_time)}\n"
-        "не был выполнен, потому что бот был выключен\n"
-        "или окно исполнения ордера истекло.\n\n"
-        "Чтобы выполнить платёж сейчас, используйте:\n"
-        f"{execute_command}\n\n"
-        "Следующий платёж по стратегии будет выполнен\n"
-        "по обычному расписанию."
-    )
-
-
-def build_order_expired_skip_notification(execute_command: str) -> str:
-    """Notification text when order expired before send attempt."""
-    return (
-        "❌ Ордер истёк\n\n"
-        "Время для отправки средств по ордеру\n"
-        "(10 минут) уже прошло.\n\n"
-        "Этот DCA цикл пропущен.\n\n"
-        "Вы можете выполнить его сейчас командой:\n"
+        "⚠️ Статус: Платёж пропущен\n\n"
+        f"🔗 План: #{plan_number}\n"
+        f"🌐 Сеть: {network_label}\n\n"
+        f"💰 Сумма: {format_notification_amount(amount)} USDT\n"
+        f"📅 Планировалось: {format_scheduled_time(scheduled_time)}\n\n"
+        f"Причина:\n{reason_text}\n\n"
+        "Действие:\n"
+        "Выполните план вручную:\n"
         f"{execute_command}"
     )
 
 
-def build_order_expired_manual_blocked_notification() -> str:
-    """Notification text when manual send is no longer possible."""
+def build_order_expired_notification(
+    *,
+    order_id: str,
+    network_key: str,
+    amount: Any,
+    execute_command: str,
+) -> str:
+    """Notification text when order expired before send attempt."""
+    network_label = escape_html(get_network_label(network_key) or network_key)
+    reason_text = escape_html(get_notification_reason("order_expired"))
     return (
-        "❌ Ордер истёк\n\n"
-        "Окно для отправки средств уже закрыто.\n"
-        "Отправка вручную больше невозможна.\n\n"
-        "Этот DCA цикл был пропущен."
+        "❌ Статус: Ордер истёк\n\n"
+        f"🔗 Ордер: {format_order_link(order_id)}\n"
+        f"🌐 Сеть: {network_label}\n\n"
+        f"💰 Сумма: {format_notification_amount(amount)} USDT\n\n"
+        f"Причина:\n{reason_text}\n\n"
+        "Действие:\n"
+        "Вы можете повторить этот платёж вручную:\n"
+        f"{execute_command}"
     )
+
+
+def build_order_payment_notification(
+    *,
+    order_id: str,
+    network_key: str,
+    amount: Any,
+    deposit_address: str,
+    order_expires: Optional[int],
+    action_text: str,
+) -> str:
+    """Notification text for active order payment instructions."""
+    network_label = escape_html(get_network_label(network_key) or network_key)
+    return (
+        "⏳ Статус: Ордер ожидает оплату\n\n"
+        f"🔗 Ордер: {format_order_link(order_id)}\n"
+        f"🌐 Сеть: {network_label}\n\n"
+        f"💰 Сумма: {format_notification_amount(amount)} USDT\n\n"
+        f"📍 Адрес: {format_code_address(deposit_address)}\n"
+        f"⏰ До истечения: {escape_html(format_order_deadline(order_expires))}\n\n"
+        "Причина:\n"
+        "Ордер создан и ожидает оплату\n\n"
+        "Действие:\n"
+        f"{action_text}"
+    )
+
+
+def build_offline_startup_notification(items: list[dict]) -> str:
+    total_missed = sum(max(1, int(item.get("cycle_count", 1))) for item in items)
+    lines = [
+        "🤖 Статус: Бот был офлайн",
+        "",
+        f"Пропущено циклов: {total_missed}",
+        "",
+        "Пропущенные платежи:",
+        "",
+    ]
+
+    action_lines = []
+    for item in items:
+        network_label = get_network_label(item["network_key"]) or item["network_key"]
+        reason_text = get_notification_reason(item["reason_code"])
+        lines.extend([
+            f"• План #{item['plan_number']} — {format_notification_amount(item['amount'])} USDT ({escape_html(network_label)})",
+            f"📅 Планировалось: {format_scheduled_time(item['scheduled_time'])}",
+            f"Причина: {escape_html(reason_text)}",
+            "",
+        ])
+        action_lines.append(
+            f"{item['execute_command']} — план #{item['plan_number']} "
+            f"({format_notification_amount(item['amount'])} USDT, {escape_html(network_label)})"
+        )
+
+    lines.extend([
+        "Действие:",
+        "Выполните нужный план вручную:",
+        "",
+        *action_lines,
+    ])
+    return "\n".join(lines)
+
+
+async def record_plan_skip_metadata(plan_id: int, reason_code: str, missed_at: Optional[int] = None) -> None:
+    """Persist skip metadata without changing scheduler ownership of execution_state."""
+    if missed_at is None:
+        missed_at = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE dca_plans SET skip_reason = COALESCE(skip_reason, ?), "
+            "missed_count = COALESCE(missed_count, 0) + 1, last_missed_at = ?, "
+            "last_execution_attempt_at = ? "
+            "WHERE id = ?",
+            (reason_code, int(missed_at), int(missed_at), plan_id)
+        )
+        await db.commit()
 
 
 async def skip_missed_dca_cycle(
@@ -581,14 +713,19 @@ async def skip_missed_dca_cycle(
     user_id: int,
     scheduled_time: int,
     interval_hours: int,
+    reason_code: str = "window_expired",
 ) -> None:
     """Mark overdue cycle as skipped and notify user."""
     now_ts = int(time.time())
     new_next_run = calculate_next_run_preserving_schedule(scheduled_time, interval_hours, now_ts)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE dca_plans SET next_run = ?, execution_state = 'skipped' WHERE id = ?",
-            (new_next_run, plan_id)
+            "UPDATE dca_plans SET next_run = ?, execution_state = 'skipped', "
+            "skip_notified = 0, skip_reason = COALESCE(skip_reason, ?), "
+            "missed_count = COALESCE(missed_count, 0) + 1, last_missed_at = ?, "
+            "last_execution_attempt_at = ? "
+            "WHERE id = ?",
+            (new_next_run, reason_code, now_ts, now_ts, plan_id)
         )
         await db.commit()
     logger.warning(
@@ -596,10 +733,37 @@ async def skip_missed_dca_cycle(
         plan_id, scheduled_time, now_ts
     )
     execute_command = await get_execute_command_hint(user_id, plan_id)
-    await bot.send_message(
-        user_id,
-        build_missed_dca_cycle_notification(scheduled_time, execute_command)
-    )
+    plan_number = await get_plan_display_number(user_id, plan_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT from_asset, amount FROM dca_plans WHERE id = ?",
+            (plan_id,)
+        ) as cur:
+            plan_details = await cur.fetchone()
+    network_key = plan_details[0] if plan_details else ""
+    amount = plan_details[1] if plan_details else 0
+    try:
+        await bot.send_message(
+            user_id,
+            build_missed_dca_cycle_notification(
+                plan_number=plan_number,
+                network_key=network_key,
+                amount=amount,
+                scheduled_time=scheduled_time,
+                execute_command=execute_command,
+                reason_code=reason_code,
+            )
+        )
+    except Exception as e:
+        logger.warning("Failed to send missed cycle notification to user %s: %s", user_id, e)
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE dca_plans SET skip_notified = 1 WHERE id = ?",
+            (plan_id,)
+        )
+        await db.commit()
 
 
 async def mark_order_expired_before_send(
@@ -613,12 +777,12 @@ async def mark_order_expired_before_send(
 ) -> None:
     """
     Mark order/cycle as expired and notify user.
-    manual_send_blocked=True uses dedicated message without manual instructions.
+    manual_send_blocked is kept for call compatibility; expired orders always use the same UX-safe text.
     """
     now_ts = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT next_run, interval_hours FROM dca_plans WHERE id = ?",
+            "SELECT next_run, interval_hours, from_asset, amount FROM dca_plans WHERE id = ?",
             (plan_id,)
         ) as cur:
             plan_row = await cur.fetchone()
@@ -634,6 +798,8 @@ async def mark_order_expired_before_send(
             base_interval_hours = int(base_interval_raw)
         except (TypeError, ValueError):
             base_interval_hours = 24
+        network_key = plan_row[2] if plan_row else ""
+        amount = plan_row[3] if plan_row else 0
         if base_scheduled > now_ts:
             # Manual execution flow should not shift future strategy schedule.
             new_next_run = base_scheduled
@@ -643,8 +809,11 @@ async def mark_order_expired_before_send(
         await db.execute(
             "UPDATE dca_plans SET active_order_id = NULL, active_order_address = NULL, "
             "active_order_amount = NULL, active_order_expires = NULL, "
-            "execution_state = 'expired', next_run = ? WHERE id = ?",
-            (new_next_run, plan_id)
+            "execution_state = 'expired', next_run = ?, skip_reason = COALESCE(skip_reason, ?), "
+            "missed_count = COALESCE(missed_count, 0) + 1, last_missed_at = ?, "
+            "last_execution_attempt_at = ? "
+            "WHERE id = ?",
+            (new_next_run, "order_expired", now_ts, now_ts, plan_id)
         )
         await db.execute(
             "UPDATE sent_transactions SET state = 'expired', error_message = ? "
@@ -656,11 +825,13 @@ async def mark_order_expired_before_send(
 
     logger.warning("Ордер истёк до отправки средств: plan_id=%s, order_id=%s", plan_id, order_id)
 
-    if manual_send_blocked:
-        notification = build_order_expired_manual_blocked_notification()
-    else:
-        execute_command = await get_execute_command_hint(user_id, plan_id)
-        notification = build_order_expired_skip_notification(execute_command)
+    execute_command = await get_execute_command_hint(user_id, plan_id)
+    notification = build_order_expired_notification(
+        order_id=order_id,
+        network_key=network_key,
+        amount=amount,
+        execute_command=execute_command,
+    )
     await bot.send_message(user_id, notification)
 
 
@@ -877,7 +1048,8 @@ async def mark_order_completed(plan_id: int, order_id: str, reason: str) -> None
             )
         await db.execute(
             "UPDATE dca_plans SET active_order_id = NULL, active_order_address = NULL, "
-            "active_order_amount = NULL, active_order_expires = NULL, execution_state = 'scheduled' WHERE id = ?",
+            "active_order_amount = NULL, active_order_expires = NULL, execution_state = 'scheduled', "
+            "missed_count = 0 WHERE id = ?",
             (plan_id,)
         )
         await db.commit()
@@ -1070,7 +1242,7 @@ async def recovery_scan_pending_transactions() -> None:
                             if plan_row:
                                 new_next_run = now + (plan_row[0] * 3600)
                                 await db.execute(
-                                    "UPDATE dca_plans SET next_run = ? WHERE id = ?",
+                                    "UPDATE dca_plans SET next_run = ?, missed_count = 0 WHERE id = ?",
                                     (new_next_run, plan_id)
                                 )
                     else:
@@ -1092,7 +1264,7 @@ async def recovery_scan_pending_transactions() -> None:
                         if plan_row:
                             new_next_run = now + (plan_row[0] * 3600)
                             await db.execute(
-                                "UPDATE dca_plans SET next_run = ? WHERE id = ?",
+                                "UPDATE dca_plans SET next_run = ?, missed_count = 0 WHERE id = ?",
                                 (new_next_run, plan_id)
                             )
             elif tx_status == "pending":
@@ -1166,8 +1338,10 @@ async def notify_offline_startup_status() -> None:
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT user_id, id FROM dca_plans "
-                "WHERE deleted = 0 AND execution_state = 'skipped' ORDER BY user_id, id"
+                "SELECT user_id, id, from_asset, amount, next_run, skip_reason, missed_count, last_missed_at "
+                "FROM dca_plans "
+                "WHERE deleted = 0 AND execution_state = 'skipped' "
+                "AND COALESCE(skip_notified, 0) = 0 ORDER BY user_id, id"
             ) as cur:
                 skipped_rows = await cur.fetchall()
 
@@ -1175,42 +1349,107 @@ async def notify_offline_startup_status() -> None:
                 "SELECT DISTINCT user_id FROM dca_plans WHERE deleted = 0 ORDER BY user_id"
             ) as users_cur:
                 active_user_rows = await users_cur.fetchall()
+
+            async with db.execute(
+                "SELECT user_id, id, from_asset, amount, interval_hours, next_run, "
+                "COALESCE(missed_count, 0), last_execution_attempt_at "
+                "FROM dca_plans WHERE active = 1 AND deleted = 0 ORDER BY user_id, id"
+            ) as plans_cur:
+                active_plan_rows = await plans_cur.fetchall()
     except Exception as e:
         logger.error("Failed to load startup offline status data: %s", e)
         save_last_seen_execution_time(now_ts)
         return
 
-    skipped_by_user: Dict[int, list[int]] = {}
-    for user_id, plan_id in skipped_rows:
-        skipped_by_user.setdefault(user_id, []).append(plan_id)
+    skipped_by_user: Dict[int, list[dict]] = {}
+    for user_id, plan_id, network_key, amount, scheduled_time, skip_reason, missed_count, last_missed_at in skipped_rows:
+        execute_command = await get_execute_command_hint(user_id, plan_id)
+        scheduled_at = int(scheduled_time or last_missed_at or now_ts)
+        skipped_by_user.setdefault(user_id, []).append({
+            "plan_id": plan_id,
+            "plan_number": await get_plan_display_number(user_id, plan_id),
+            "execute_command": execute_command,
+            "network_key": network_key,
+            "amount": amount,
+            "scheduled_time": scheduled_at,
+            "reason_code": skip_reason or "window_expired",
+            "missed_count": int(missed_count or 1),
+            "cycle_count": max(1, int(missed_count or 1)),
+        })
+
+    offline_by_user: Dict[int, list[dict]] = {}
+    offline_updates: list[tuple[int, int, int]] = []
+    if offline_detected:
+        offline_end = now_ts - DCA_EXECUTION_WINDOW_SECONDS
+        for user_id, plan_id, network_key, amount, interval_hours, next_run, current_missed_count, last_execution_attempt_at in active_plan_rows:
+            try:
+                scheduled_time = int(next_run)
+                interval_seconds = max(1, int(interval_hours) * 3600)
+            except (TypeError, ValueError):
+                continue
+            offline_start = max(int(last_seen_ts), int(last_execution_attempt_at or 0))
+            while scheduled_time < offline_start:
+                scheduled_time += interval_seconds
+            execute_command = await get_execute_command_hint(user_id, plan_id)
+            plan_number = await get_plan_display_number(user_id, plan_id)
+            offline_count = 0
+            last_offline_missed_at = None
+            while scheduled_time <= offline_end:
+                offline_by_user.setdefault(user_id, []).append({
+                    "plan_id": plan_id,
+                    "plan_number": plan_number,
+                    "execute_command": execute_command,
+                    "network_key": network_key,
+                    "amount": amount,
+                    "scheduled_time": scheduled_time,
+                    "reason_code": "offline",
+                    "missed_count": int(current_missed_count or 0) + offline_count + 1,
+                    "cycle_count": 1,
+                })
+                offline_count += 1
+                last_offline_missed_at = scheduled_time
+                scheduled_time += interval_seconds
+            if offline_count and last_offline_missed_at is not None:
+                offline_updates.append((offline_count, last_offline_missed_at, plan_id))
+
+    if offline_updates:
+        async with aiosqlite.connect(DB_PATH) as db:
+            for offline_count, last_offline_missed_at, plan_id in offline_updates:
+                await db.execute(
+                    "UPDATE dca_plans SET skip_notified = 0, skip_reason = COALESCE(skip_reason, ?), "
+                    "missed_count = COALESCE(missed_count, 0) + ?, last_missed_at = ?, "
+                    "last_execution_attempt_at = ? "
+                    "WHERE id = ?",
+                    ("offline", offline_count, now_ts, now_ts, plan_id)
+                )
+            await db.commit()
 
     if not offline_detected and not skipped_by_user:
         save_last_seen_execution_time(now_ts)
         return
 
-    if skipped_by_user:
+    missed_by_user: Dict[int, list[dict]] = {}
+    for user_id, items in offline_by_user.items():
+        missed_by_user.setdefault(user_id, []).extend(items)
+    for user_id, items in skipped_by_user.items():
+        existing_keys = {(item["plan_id"], item["scheduled_time"]) for item in missed_by_user.get(user_id, [])}
+        for item in items:
+            key = (item["plan_id"], item["scheduled_time"])
+            if key not in existing_keys:
+                missed_by_user.setdefault(user_id, []).append(item)
+                existing_keys.add(key)
+
+    if missed_by_user:
         notified_users = set()
         notified_plan_ids = set()
-        for user_id, plan_ids in skipped_by_user.items():
+        for user_id, missed_items in missed_by_user.items():
             notified_users.add(user_id)
-            execute_commands = []
-            for plan_id in plan_ids:
-                cmd = await get_execute_command_hint(user_id, plan_id)
-                if cmd not in execute_commands:
-                    execute_commands.append(cmd)
-
-            commands_text = "\n".join(execute_commands) if execute_commands else "/execute"
-            message_text = (
-                "🤖 Бот был офлайн\n\n"
-                f"Обнаружено пропущенных циклов: {len(plan_ids)}\n\n"
-                "Некоторые DCA платежи не были выполнены,\n"
-                "поскольку бот был выключен.\n\n"
-                "Вы можете выполнить их вручную через:\n"
-                f"{commands_text}"
-            )
+            message_text = build_offline_startup_notification(missed_items)
             try:
                 await bot.send_message(user_id, message_text)
-                notified_plan_ids.update(plan_ids)
+                notified_plan_ids.update(
+                    item["plan_id"] for item in missed_items
+                )
             except Exception as e:
                 logger.warning("Failed to send offline/skipped notification to user %s: %s", user_id, e)
 
@@ -1221,6 +1460,11 @@ async def notify_offline_startup_status() -> None:
                     await db.execute(
                         f"UPDATE dca_plans SET execution_state = 'scheduled' "
                         f"WHERE execution_state = 'skipped' AND id IN ({placeholders})",
+                        tuple(notified_plan_ids)
+                    )
+                    await db.execute(
+                        f"UPDATE dca_plans SET skip_notified = 1 "
+                        f"WHERE id IN ({placeholders})",
                         tuple(notified_plan_ids)
                     )
                     await db.commit()
@@ -1235,10 +1479,10 @@ async def notify_offline_startup_status() -> None:
             if user_id in notified_users:
                 continue
             message_text = (
-                "🤖 Бот был офлайн\n\n"
-                "Бот был временно выключен,\n"
-                "но ни один DCA цикл не был пропущен.\n\n"
-                "Сейчас бот работает в штатном режиме."
+                "🤖 Статус: Бот был офлайн\n\n"
+                "Пропущено циклов: 0\n\n"
+                "Действие:\n"
+                "Ничего делать не нужно."
             )
             try:
                 await bot.send_message(user_id, message_text)
@@ -1247,10 +1491,10 @@ async def notify_offline_startup_status() -> None:
     elif offline_detected:
         for (user_id,) in active_user_rows:
             message_text = (
-                "🤖 Бот был офлайн\n\n"
-                "Бот был временно выключен,\n"
-                "но ни один DCA цикл не был пропущен.\n\n"
-                "Сейчас бот работает в штатном режиме."
+                "🤖 Статус: Бот был офлайн\n\n"
+                "Пропущено циклов: 0\n\n"
+                "Действие:\n"
+                "Ничего делать не нужно."
             )
             try:
                 await bot.send_message(user_id, message_text)
@@ -1595,7 +1839,12 @@ async def init_db():
                 active_order_address TEXT,
                 active_order_amount TEXT,
                 active_order_expires INTEGER,
-                deleted BOOLEAN DEFAULT 0
+                deleted BOOLEAN DEFAULT 0,
+                skip_notified INTEGER DEFAULT 0,
+                skip_reason TEXT,
+                missed_count INTEGER DEFAULT 0,
+                last_missed_at INTEGER,
+                last_execution_attempt_at INTEGER
             )
         ''')
         
@@ -1618,6 +1867,16 @@ async def init_db():
             await db.execute("ALTER TABLE dca_plans ADD COLUMN execution_state TEXT DEFAULT 'scheduled'")
         if "last_tx_hash" not in existing_columns:
             await db.execute("ALTER TABLE dca_plans ADD COLUMN last_tx_hash TEXT")
+        if "skip_notified" not in existing_columns:
+            await db.execute("ALTER TABLE dca_plans ADD COLUMN skip_notified INTEGER DEFAULT 0")
+        if "skip_reason" not in existing_columns:
+            await db.execute("ALTER TABLE dca_plans ADD COLUMN skip_reason TEXT")
+        if "missed_count" not in existing_columns:
+            await db.execute("ALTER TABLE dca_plans ADD COLUMN missed_count INTEGER DEFAULT 0")
+        if "last_missed_at" not in existing_columns:
+            await db.execute("ALTER TABLE dca_plans ADD COLUMN last_missed_at INTEGER")
+        if "last_execution_attempt_at" not in existing_columns:
+            await db.execute("ALTER TABLE dca_plans ADD COLUMN last_execution_attempt_at INTEGER")
         
         # Создаём таблицу для хранения информации о кошельках (single wallet per user)
         await db.execute('''
@@ -1873,7 +2132,7 @@ async def dca_scheduler():
                                             )
                                             new_next_run = now + (interval_hours * 3600)
                                             await db.execute(
-                                                "UPDATE dca_plans SET next_run = ? WHERE id = ?",
+                                                "UPDATE dca_plans SET next_run = ?, missed_count = 0 WHERE id = ?",
                                                 (new_next_run, plan_id)
                                             )
                                         else:
@@ -1935,7 +2194,7 @@ async def dca_scheduler():
                                                     )
                                                     new_next_run = now + (interval_hours * 3600)
                                                     await db.execute(
-                                                        "UPDATE dca_plans SET next_run = ? WHERE id = ?",
+                                                        "UPDATE dca_plans SET next_run = ?, missed_count = 0 WHERE id = ?",
                                                         (new_next_run, plan_id)
                                                     )
                                                 else:
@@ -1953,7 +2212,7 @@ async def dca_scheduler():
                                             )
                                             new_next_run = now + (interval_hours * 3600)
                                             await db.execute(
-                                                "UPDATE dca_plans SET next_run = ? WHERE id = ?",
+                                                "UPDATE dca_plans SET next_run = ?, missed_count = 0 WHERE id = ?",
                                                 (new_next_run, plan_id)
                                             )
                                             await db.commit()
@@ -2106,20 +2365,15 @@ async def dca_scheduler():
                         deposit_address = from_obj.get("address")
                         deposit_amount = from_obj.get("amount")
                         
-                        # Получаем время истечения ордера
-                        time_left = order_data.get("time", {}).get("left", 0)
-                        if not isinstance(time_left, (int, float)) or time_left < 0:
-                            time_left = 0
-                        order_expires = int(time.time()) + int(time_left)
-                        hours = time_left // 3600
-                        minutes = (time_left % 3600) // 60
-                        time_text = f"{hours}ч {minutes}мин" if hours > 0 else f"{minutes}мин"
+                        # Получаем timestamp истечения ордера из ответа FixedFloat.
+                        order_expires = extract_order_expires_at(order_data)
                         
                         # ВАЖНО: Сохраняем активный ордер в БД для предотвращения дубликатов
                         await db.execute(
                             "UPDATE dca_plans SET active_order_id = ?, active_order_address = ?, "
-                            "active_order_amount = ?, active_order_expires = ?, execution_state = 'scheduled' WHERE id = ?",
-                            (order_id, deposit_address, f"{deposit_amount} {deposit_code}", order_expires, plan_id)
+                            "active_order_amount = ?, active_order_expires = ?, execution_state = 'scheduled', "
+                            "last_execution_attempt_at = ? WHERE id = ?",
+                            (order_id, deposit_address, f"{deposit_amount} {deposit_code}", order_expires, now, plan_id)
                         )
                         await db.commit()
                         plan_claimed = False
@@ -2149,7 +2403,20 @@ async def dca_scheduler():
                             )
                             await db.commit()
                             
-                            progress_msg = await bot.send_message(user_id, "⏳ Выполняю ордер...")
+                            progress_msg = await bot.send_message(
+                                user_id,
+                                "⏳ Статус: Ордер выполняется\n\n"
+                                f"🔗 Ордер: {format_order_link(order_id)}\n"
+                                f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                                f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n"
+                                f"⏰ До истечения: {escape_html(format_order_deadline(order_expires))}\n\n"
+                                "Причина:\n"
+                                "Авто-отправка запущена\n\n"
+                                "Действие:\n"
+                                "Ожидайте подтверждения транзакции.",
+                                parse_mode="HTML",
+                                disable_web_page_preview=True,
+                            )
                             track_order_progress_message(str(order_id), int(user_id), int(progress_msg.message_id))
                             
                             if not await claim_auto_send_execution(plan_id, order_id):
@@ -2198,12 +2465,14 @@ async def dca_scheduler():
                                     
                                     await bot.send_message(
                                         user_id,
-                                        f"⚠️ Временная ошибка сети, выполнение отложено\n\n"
+                                        f"⚠️ Статус: Выполнение отложено\n\n"
                                         f"🔗 Ордер: {format_order_link(order_id)}\n"
-                                        f"🌐 Сеть: {escape_html(from_asset)}\n"
-                                        f"Причина: {escape_html(human_error)}\n\n"
-                                        f"Повтор запланирован на следующий интервал ({interval_hours}ч).\n"
-                                        f"Можно запустить вручную командой /execute.",
+                                        f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                                        f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n"
+                                        f"⏰ До истечения: {escape_html(format_order_deadline(order_expires))}\n\n"
+                                        f"Причина:\n{escape_html(human_error)}\n\n"
+                                        "Действие:\n"
+                                        f"Повтор запланирован на следующий интервал ({interval_hours}ч).",
                                         parse_mode="HTML",
                                         disable_web_page_preview=True,
                                     )
@@ -2227,7 +2496,9 @@ async def dca_scheduler():
                                             manual_send_blocked=True,
                                         )
                                         continue
-                                    
+                                    if is_insufficient_auto_send_error(error_str):
+                                        await record_plan_skip_metadata(plan_id, "insufficient", now)
+
                                     await bot.send_message(
                                         user_id,
                                         build_auto_send_failed_notification(
@@ -2235,7 +2506,7 @@ async def dca_scheduler():
                                             network_key=from_asset,
                                             required_amount=required_amount,
                                             deposit_address=deposit_address,
-                                            time_text=time_text,
+                                            order_expires=order_expires,
                                             error_msg=error_str,
                                         ),
                                         parse_mode="HTML",
@@ -2259,11 +2530,15 @@ async def dca_scheduler():
                                 await db.commit()
                                 
                                 msg = (
-                                    f"✅ USDT sent automatically!\n\n"
+                                    f"⏳ Статус: USDT отправлен\n\n"
                                     f"🔗 Ордер: {format_order_link(order_id)}\n"
-                                    f"\n"
-                                    f"💵 Sent: {format_order_amount(required_amount, network_key=from_asset)}\n"
-                                    f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
+                                    f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                                    f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n\n"
+                                    f"📍 Адрес: {format_code_address(deposit_address)}\n\n"
+                                    "Причина:\n"
+                                    "Авто-отправка выполнена\n\n"
+                                    "Действие:\n"
+                                    "Ожидайте завершения обмена FixedFloat."
                                 )
                                 
                                 if DRY_RUN:
@@ -2276,7 +2551,7 @@ async def dca_scheduler():
                                 # Advance schedule ONLY on successful send
                                 new_next_run = now + (interval_hours * 3600)
                                 await db.execute(
-                                    "UPDATE dca_plans SET next_run = ? WHERE id = ?",
+                                    "UPDATE dca_plans SET next_run = ?, missed_count = 0 WHERE id = ?",
                                     (new_next_run, plan_id)
                                 )
                                 await db.commit()
@@ -2294,10 +2569,14 @@ async def dca_scheduler():
                                     await db.commit()
                                     await bot.send_message(
                                         user_id,
-                                        f"⚠️ Транзакция отправлена, но ещё не подтверждена сетью\n\n"
+                                        f"⚠️ Статус: TX ожидает подтверждения\n\n"
                                         f"🔗 Ордер: {format_order_link(order_id)}\n"
-                                        f"🌐 Сеть: {escape_html(from_asset)}\n"
-                                        f"Новый ордер не будет создан, пока статус TX не определится.",
+                                        f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                                        f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n\n"
+                                        "Причина:\n"
+                                        "Транзакция отправлена, подтверждение сети ещё не получено\n\n"
+                                        "Действие:\n"
+                                        "Новый ордер не будет создан, пока статус TX не определится.",
                                         parse_mode="HTML",
                                         disable_web_page_preview=True,
                                     )
@@ -2314,10 +2593,14 @@ async def dca_scheduler():
                                         await db.commit()
                                         await bot.send_message(
                                             user_id,
-                                            f"⚠️ Транзакция отправлена, но подтверждение ещё не получено\n\n"
+                                            f"⚠️ Статус: TX ожидает подтверждения\n\n"
                                             f"🔗 Ордер: {format_order_link(order_id)}\n"
-                                            f"🌐 Сеть: {escape_html(from_asset)}\n"
-                                            f"Новый ордер не будет создан, пока статус TX не определится.",
+                                            f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                                            f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n\n"
+                                            "Причина:\n"
+                                            "Транзакция отправлена, подтверждение сети ещё не получено\n\n"
+                                            "Действие:\n"
+                                            "Новый ордер не будет создан, пока статус TX не определится.",
                                             parse_mode="HTML",
                                             disable_web_page_preview=True,
                                         )
@@ -2330,12 +2613,14 @@ async def dca_scheduler():
                                         await db.commit()
                                         await bot.send_message(
                                             user_id,
-                                            f"⚠️ Временная ошибка сети, выполнение отложено\n\n"
+                                            f"⚠️ Статус: Выполнение отложено\n\n"
                                             f"🔗 Ордер: {format_order_link(order_id)}\n"
-                                            f"🌐 Сеть: {escape_html(from_asset)}\n"
-                                            f"Причина: {escape_html(human_error)}\n\n"
-                                            f"Повтор запланирован на следующий интервал ({interval_hours}ч).\n"
-                                            f"Можно запустить вручную командой /execute.",
+                                            f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                                            f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n"
+                                            f"⏰ До истечения: {escape_html(format_order_deadline(order_expires))}\n\n"
+                                            f"Причина:\n{escape_html(human_error)}\n\n"
+                                            "Действие:\n"
+                                            f"Повтор запланирован на следующий интервал ({interval_hours}ч).",
                                             parse_mode="HTML",
                                             disable_web_page_preview=True,
                                         )
@@ -2358,13 +2643,15 @@ async def dca_scheduler():
                                             manual_send_blocked=True,
                                         )
                                         continue
-                                    
+                                    if is_insufficient_auto_send_error(error_msg):
+                                        await record_plan_skip_metadata(plan_id, "insufficient", now)
+
                                     error_notification = build_auto_send_failed_notification(
                                         order_id=order_id,
                                         network_key=from_asset,
                                         required_amount=required_amount,
                                         deposit_address=deposit_address,
-                                        time_text=time_text,
+                                        order_expires=order_expires,
                                         error_msg=error_msg,
                                     )
                                     await bot.send_message(
@@ -2396,13 +2683,14 @@ async def dca_scheduler():
                                 continue
                             await bot.send_message(
                                 user_id,
-                                f"✅ DCA plan executed!\n\n"
-                                f"🔗 Ордер: {format_order_link(order_id)}\n\n"
-                                f"💵 Send: {format_order_amount(deposit_amount, deposit_code, from_asset)}\n"
-                                f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
-                                f"⏰ Order valid for: {time_text}\n\n"
-                                f"💡 For auto-send, setup wallet:\n"
-                                f"/setwallet",
+                                build_order_payment_notification(
+                                    order_id=order_id,
+                                    network_key=from_asset,
+                                    amount=deposit_amount,
+                                    deposit_address=deposit_address,
+                                    order_expires=order_expires,
+                                    action_text="Оплатите ордер на указанный адрес. Для следующих платежей настройте авто-отправку: /setwallet",
+                                ),
                                 parse_mode="HTML",
                                 disable_web_page_preview=True,
                             )
@@ -2467,6 +2755,7 @@ async def cmd_start(message: Message):
         f"/setdca — создать DCA план\n\n"
         f"⚙️ Команды:\n"
         f"/status — статус планов\n"
+        f"/execute_<id>, /pause_<id>, /resume_<id>, /delete_<id> — управление планом\n"
         f"/limits — сети и лимиты\n\n"
         f"ℹ️ Информация:\n"
         f"/help — подробная справка\n"
@@ -2510,6 +2799,8 @@ async def cmd_help(message: Message):
         "/setwallet — настроить кошелёк\n"
         "/setdca — создать DCA план\n"
         "/status — статус планов\n"
+        "/execute_<id> — выполнить план\n"
+        "/pause_<id> /resume_<id> /delete_<id> — управление планом\n"
         "/limits — сети и лимиты\n"
         "/history — история операций\n"
         "/walletstatus — баланс EVM-кошелька\n"
@@ -2723,25 +3014,25 @@ def is_network_available_on_fixedfloat(network_key: str, available_networks: dic
 @dp.message(lambda message: message.text and message.text.startswith("/execute"))
 async def cmd_execute(message: Message):
     """
-    Команда /execute или /execute_N - ручное выполнение обмена по DCA-плану.
-    N - порядковый номер плана (1, 2, 3), как в /status
+    Команда /execute или /execute_<plan_id> - ручное выполнение обмена по DCA-плану.
+    В UI план отображается как #N, но команда использует стабильный id из БД.
     """
     user_id = message.from_user.id
     
-    # Пытаемся извлечь порядковый номер плана из команды
+    # Пытаемся извлечь стабильный id плана из команды
     text = message.text.strip()
-    plan_number = None
+    requested_plan_id = None
     
-    # Пробуем формат /execute_1
+    # Пробуем формат /execute_123
     if "_" in text:
         try:
-            plan_number = int(text.split("_")[1])
+            requested_plan_id = int(text.split("_", 1)[1])
         except:
             pass
-    # Пробуем формат /execute 1
+    # Пробуем формат /execute 123
     elif " " in text:
         try:
-            plan_number = int(text.split()[1])
+            requested_plan_id = int(text.split()[1])
         except:
             pass
     
@@ -2761,27 +3052,30 @@ async def cmd_execute(message: Message):
         )
         return
     
-    # Если номер не указан - показываем список
-    if plan_number is None:
+    # Если id не указан - показываем список
+    if requested_plan_id is None:
         if len(plans) == 1:
             # Если план один - выполняем его автоматически
-            plan_number = 1
+            requested_plan_id = int(plans[0][0])
         else:
             # Показываем список для выбора
             text = "📋 Выбери план для выполнения:\n\n"
             for idx, p in enumerate(plans, start=1):
                 interval_text = format_interval(p[3])
-                text += f"• /execute_{idx} - {get_network_label(p[1]) or p[1]}, {format_amount(float(p[2]))} USDT, раз в {interval_text}\n"
+                text += (
+                    f"• /execute_{p[0]} — план #{idx} "
+                    f"({format_amount(float(p[2]))} USDT, {get_network_label(p[1]) or p[1]}), "
+                    f"раз в {interval_text}\n"
+                )
             await message.answer(text)
             return
     
-    # Проверяем что номер плана валиден
-    if plan_number < 1 or plan_number > len(plans):
-        await message.answer(f"❌ План {plan_number} не найден\n\nУ тебя {len(plans)} план(ов)")
+    plan_ids = {int(plan[0]) for plan in plans}
+    if requested_plan_id not in plan_ids:
+        await message.answer(f"❌ План id={requested_plan_id} не найден\n\nУ тебя {len(plans)} план(ов)")
         return
     
-    # Получаем реальный ID плана по порядковому номеру
-    plan_id = plans[plan_number - 1][0]
+    plan_id = requested_plan_id
     
     # Получаем конкретный план по ID (только не удаленные)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -3045,19 +3339,15 @@ async def cmd_execute(message: Message):
 
     if active_order_id and active_order_expires and active_order_expires > now:
         # У этого плана уже есть активный неистёкший ордер
-        time_left = active_order_expires - now
-        hours = time_left // 3600
-        minutes = (time_left % 3600) // 60
-        time_text = f"{hours}ч {minutes}мин" if hours > 0 else f"{minutes}мин"
-        
         await message.answer(
-            f"⚠️ У этого плана уже есть активный ордер!\n\n"
-            f"🔗 Ордер: {format_order_link(active_order_id)}\n\n"
-            f"💵 Отправь: {format_order_amount(active_order_amount, network_key=from_asset)}\n"
-            f"📍 На адрес: {format_code_address(active_order_address)}\n\n"
-            f"🎯 Получишь BTC на:\n{format_code_address(btc_address)}\n\n"
-            f"⏰ Ордер действителен: {time_text}\n\n"
-            f"💡 Дождись истечения текущего ордера или завершения обмена",
+            build_order_payment_notification(
+                order_id=active_order_id,
+                network_key=from_asset,
+                amount=active_order_amount,
+                deposit_address=active_order_address,
+                order_expires=active_order_expires,
+                action_text="Дождитесь истечения текущего ордера или завершения обмена.",
+            ),
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
@@ -3146,28 +3436,14 @@ async def cmd_execute(message: Message):
         deposit_amount = from_obj.get("amount")
         deposit_address = from_obj.get("address")
         
-        # Получаем время истечения ордера (в секундах)
-        time_left = data.get("time", {}).get("left", 0)
-        if not isinstance(time_left, (int, float)) or time_left < 0:
-            time_left = 0
-        
-        # Вычисляем часы и минуты
-        hours = int(time_left) // 3600
-        minutes = (int(time_left) % 3600) // 60
-        
-        # Формируем строку времени
-        if hours > 0:
-            time_text = f"{hours}ч {minutes}мин"
-        else:
-            time_text = f"{minutes}мин"
-
         # Сохраняем информацию об активном ордере в БД
-        order_expires = int(time.time()) + int(time_left)
+        order_expires = extract_order_expires_at(data)
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
                 "UPDATE dca_plans SET active_order_id = ?, active_order_address = ?, "
-                "active_order_amount = ?, active_order_expires = ?, execution_state = 'scheduled' WHERE id = ?",
-                (order_id, deposit_address, f"{deposit_amount} {deposit_code}", order_expires, plan_id)
+                "active_order_amount = ?, active_order_expires = ?, execution_state = 'scheduled', "
+                "last_execution_attempt_at = ? WHERE id = ?",
+                (order_id, deposit_address, f"{deposit_amount} {deposit_code}", order_expires, int(time.time()), plan_id)
             )
             await db.commit()
             plan_claimed = False
@@ -3198,7 +3474,19 @@ async def cmd_execute(message: Message):
                 )
                 await db.commit()
             
-            progress_msg = await message.answer("⏳ Выполняю ордер...")
+            progress_msg = await message.answer(
+                "⏳ Статус: Ордер выполняется\n\n"
+                f"🔗 Ордер: {format_order_link(order_id)}\n"
+                f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n"
+                f"⏰ До истечения: {escape_html(format_order_deadline(order_expires))}\n\n"
+                "Причина:\n"
+                "Авто-отправка запущена\n\n"
+                "Действие:\n"
+                "Ожидайте подтверждения транзакции.",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
             track_order_progress_message(str(order_id), int(user_id), int(progress_msg.message_id))
             
             if not await claim_auto_send_execution(plan_id, order_id):
@@ -3236,14 +3524,22 @@ async def cmd_execute(message: Message):
                         "WHERE order_id = ? AND plan_id = ?",
                         (approve_tx, transfer_tx, order_id, plan_id)
                     )
+                    await db.execute(
+                        "UPDATE dca_plans SET missed_count = 0 WHERE id = ?",
+                        (plan_id,)
+                    )
                     await db.commit()
                 
                 msg = (
-                    f"✅ USDT отправлен автоматически!\n\n"
+                    f"⏳ Статус: USDT отправлен\n\n"
                     f"🔗 Ордер: {format_order_link(order_id)}\n"
-                    f"\n"
-                    f"💵 Отправлено: {format_order_amount(required_amount, network_key=from_asset)}\n"
-                    f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
+                    f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                    f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n\n"
+                    f"📍 Адрес: {format_code_address(deposit_address)}\n\n"
+                    "Причина:\n"
+                    "Авто-отправка выполнена\n\n"
+                    "Действие:\n"
+                    "Ожидайте завершения обмена FixedFloat."
                 )
                 
                 if DRY_RUN:
@@ -3284,9 +3580,14 @@ async def cmd_execute(message: Message):
                 if is_pending_tx_error(error_msg):
                     pending_tx_hash = approve_tx if error_msg.startswith("APPROVE_TX_PENDING:") else transfer_tx
                     await message.answer(
-                        f"⚠️ Транзакция отправлена, но подтверждение ещё не получено\n\n"
+                        f"⚠️ Статус: TX ожидает подтверждения\n\n"
                         f"🔗 Ордер: {format_order_link(order_id)}\n"
-                        f"Новый ордер не будет создан, пока статус TX не определится.",
+                        f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                        f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n\n"
+                        "Причина:\n"
+                        "Транзакция отправлена, подтверждение сети ещё не получено\n\n"
+                        "Действие:\n"
+                        "Новый ордер не будет создан, пока статус TX не определится.",
                         parse_mode="HTML",
                         disable_web_page_preview=True,
                     )
@@ -3294,9 +3595,14 @@ async def cmd_execute(message: Message):
                 if is_retryable_network_error(error_msg) and (approve_tx or transfer_tx):
                     pending_tx_hash = transfer_tx or approve_tx
                     await message.answer(
-                        f"⚠️ Транзакция отправлена, но подтверждение ещё не получено\n\n"
+                        f"⚠️ Статус: TX ожидает подтверждения\n\n"
                         f"🔗 Ордер: {format_order_link(order_id)}\n"
-                        f"Новый ордер не будет создан, пока статус TX не определится.",
+                        f"🌐 Сеть: {escape_html(get_network_label(from_asset) or from_asset)}\n\n"
+                        f"💰 Сумма: {format_notification_amount(required_amount)} USDT\n\n"
+                        "Причина:\n"
+                        "Транзакция отправлена, подтверждение сети ещё не получено\n\n"
+                        "Действие:\n"
+                        "Новый ордер не будет создан, пока статус TX не определится.",
                         parse_mode="HTML",
                         disable_web_page_preview=True,
                     )
@@ -3313,12 +3619,14 @@ async def cmd_execute(message: Message):
                         manual_send_blocked=True,
                     )
                     return
+                if is_insufficient_auto_send_error(error_msg):
+                    await record_plan_skip_metadata(plan_id, "insufficient")
                 error_notification = build_auto_send_failed_notification(
                     order_id=order_id,
                     network_key=from_asset,
                     required_amount=required_amount,
                     deposit_address=deposit_address,
-                    time_text=time_text,
+                    order_expires=order_expires,
                     error_msg=error_msg,
                 )
                 await message.answer(
@@ -3340,18 +3648,23 @@ async def cmd_execute(message: Message):
                 )
                 return
             await message.answer(
-                f"✅ Ордер создан!\n\n"
-                f"🔗 Ордер: {format_order_link(order_id)}\n\n"
-                f"💵 Отправь: {format_order_amount(deposit_amount, deposit_code, from_asset)}\n"
-                f"📍 На адрес: {format_code_address(deposit_address)}\n\n"
-                f"🎯 Получишь BTC на:\n{format_code_address(btc_address)}\n\n"
-                f"⏰ Ордер действителен: {time_text}\n\n"
-                f"💡 Для автоматической отправки:\n"
-                f"1. Настрой кошелёк: /setwallet\n"
-                f"2. Установи пароль: /setpassword",
+                build_order_payment_notification(
+                    order_id=order_id,
+                    network_key=from_asset,
+                    amount=deposit_amount,
+                    deposit_address=deposit_address,
+                    order_expires=order_expires,
+                    action_text="Оплатите ордер на указанный адрес. Для следующих платежей настройте авто-отправку: /setwallet и /setpassword",
+                ),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "UPDATE dca_plans SET missed_count = 0 WHERE id = ?",
+                    (plan_id,)
+                )
+                await db.commit()
         
         logger.info(f"Ручной ордер создан: user_id={user_id}, plan_id={plan_id}, order_id={order_id}")
         
@@ -3479,12 +3792,12 @@ async def cmd_status(message: Message):
                 asyncio.create_task(cleanup_expired_order(plan_id))
         
         status_text += f"\n⚙️ Управление:\n"
-        status_text += f"▶️ Выполнить: /execute_{idx}\n"
+        status_text += f"▶️ Выполнить: /execute_{plan_id}\n"
         if active:
-            status_text += f"⏸️ Пауза: /pause_{idx}\n"
+            status_text += f"⏸️ Пауза: /pause_{plan_id}\n"
         else:
-            status_text += f"▶️ Возобновить: /resume_{idx}\n"
-        status_text += f"❌ Удалить: /delete_{idx}\n\n"
+            status_text += f"▶️ Возобновить: /resume_{plan_id}\n"
+        status_text += f"❌ Удалить: /delete_{plan_id}\n\n"
     
     await message.answer(
         status_text,
@@ -3496,47 +3809,44 @@ async def cmd_status(message: Message):
 @dp.message(lambda message: message.text and message.text.startswith("/pause"))
 async def cmd_pause(message: Message):
     """
-    Команда /pause или /pause_N - приостановить автоматическое выполнение DCA плана.
-    N - порядковый номер плана (1, 2, 3), как в /status
+    Команда /pause или /pause_<plan_id> - приостановить автоматическое выполнение DCA плана.
     """
     user_id = message.from_user.id
     
-    # Пытаемся извлечь порядковый номер плана из команды
+    # Пытаемся извлечь стабильный id плана из команды
     text = message.text.strip()
-    plan_number = None
+    plan_id = None
     
     if "_" in text:
         try:
-            plan_number = int(text.split("_")[1])
+            plan_id = int(text.split("_", 1)[1])
         except:
             pass
     elif " " in text:
         try:
-            plan_number = int(text.split()[1])
+            plan_id = int(text.split()[1])
         except:
             pass
     
     async with aiosqlite.connect(DB_PATH) as db:
-        if plan_number:
-            # Получаем список планов для конвертации номера в ID
+        if plan_id:
             async with db.execute(
-                "SELECT id FROM dca_plans WHERE user_id = ? AND deleted = 0 ORDER BY id",
-                (user_id,)
+                "SELECT id FROM dca_plans WHERE id = ? AND user_id = ? AND deleted = 0",
+                (plan_id, user_id)
             ) as cur:
-                plans = await cur.fetchall()
+                plan_row = await cur.fetchone()
             
-            if plan_number < 1 or plan_number > len(plans):
-                await message.answer(f"❌ План {plan_number} не найден")
+            if not plan_row:
+                await message.answer(f"❌ План id={plan_id} не найден")
                 return
-            
-            plan_id = plans[plan_number - 1][0]
             
             # Приостанавливаем по ID
             await db.execute(
                 "UPDATE dca_plans SET active = 0 WHERE id = ? AND user_id = ? AND deleted = 0",
                 (plan_id, user_id)
             )
-            msg = f"⏸ План {plan_number} приостановлен"
+            plan_number = await get_plan_display_number(user_id, plan_id)
+            msg = f"⏸ План #{plan_number} приостановлен"
         else:
             # Приостанавливаем все планы пользователя (только не удаленные)
             await db.execute(
@@ -3552,8 +3862,8 @@ async def cmd_pause(message: Message):
         "Автоматические покупки остановлены.\n"
         "Для возобновления: /resume"
     )
-    if plan_number:
-        logger.info(f"DCA план приостановлен: user_id={user_id}, plan_number={plan_number}")
+    if plan_id:
+        logger.info(f"DCA план приостановлен: user_id={user_id}, plan_id={plan_id}")
     else:
         logger.info(f"Все DCA планы приостановлены: user_id={user_id}")
 
@@ -3561,47 +3871,44 @@ async def cmd_pause(message: Message):
 @dp.message(lambda message: message.text and message.text.startswith("/resume"))
 async def cmd_resume(message: Message):
     """
-    Команда /resume или /resume_N - возобновить автоматическое выполнение DCA плана.
-    N - порядковый номер плана (1, 2, 3), как в /status
+    Команда /resume или /resume_<plan_id> - возобновить автоматическое выполнение DCA плана.
     """
     user_id = message.from_user.id
     
-    # Пытаемся извлечь порядковый номер плана из команды
+    # Пытаемся извлечь стабильный id плана из команды
     text = message.text.strip()
-    plan_number = None
+    plan_id = None
     
     if "_" in text:
         try:
-            plan_number = int(text.split("_")[1])
+            plan_id = int(text.split("_", 1)[1])
         except:
             pass
     elif " " in text:
         try:
-            plan_number = int(text.split()[1])
+            plan_id = int(text.split()[1])
         except:
             pass
     
     async with aiosqlite.connect(DB_PATH) as db:
-        if plan_number:
-            # Получаем список планов для конвертации номера в ID
+        if plan_id:
             async with db.execute(
-                "SELECT id FROM dca_plans WHERE user_id = ? AND deleted = 0 ORDER BY id",
-                (user_id,)
+                "SELECT id FROM dca_plans WHERE id = ? AND user_id = ? AND deleted = 0",
+                (plan_id, user_id)
             ) as cur:
-                plans = await cur.fetchall()
+                plan_row = await cur.fetchone()
             
-            if plan_number < 1 or plan_number > len(plans):
-                await message.answer(f"❌ План {plan_number} не найден")
+            if not plan_row:
+                await message.answer(f"❌ План id={plan_id} не найден")
                 return
-            
-            plan_id = plans[plan_number - 1][0]
             
             # Возобновляем по ID
             await db.execute(
                 "UPDATE dca_plans SET active = 1 WHERE id = ? AND user_id = ? AND deleted = 0",
                 (plan_id, user_id)
             )
-            msg = f"▶️ План {plan_number} возобновлён"
+            plan_number = await get_plan_display_number(user_id, plan_id)
+            msg = f"▶️ План #{plan_number} возобновлён"
         else:
             # Возобновляем все планы пользователя (только не удаленные)
             await db.execute(
@@ -3617,8 +3924,8 @@ async def cmd_resume(message: Message):
         "Автоматические покупки снова активны.\n"
         "Проверь статус: /status"
     )
-    if plan_number:
-        logger.info(f"DCA план возобновлён: user_id={user_id}, plan_number={plan_number}")
+    if plan_id:
+        logger.info(f"DCA план возобновлён: user_id={user_id}, plan_id={plan_id}")
     else:
         logger.info(f"Все DCA планы возобновлены: user_id={user_id}")
 
@@ -3626,47 +3933,32 @@ async def cmd_resume(message: Message):
 @dp.message(lambda message: message.text and re.fullmatch(r"/delete(?:_\d+|\s+\d+)?", message.text.strip()))
 async def cmd_delete(message: Message):
     """
-    Команда /delete_N - удалить DCA план полностью.
-    N - порядковый номер плана (1, 2, 3), как в /status
+    Команда /delete_<plan_id> - удалить DCA план полностью.
     """
     user_id = message.from_user.id
     
-    # Извлекаем порядковый номер плана из команды
+    # Извлекаем стабильный id плана из команды
     text = message.text.strip()
-    plan_number = None
+    plan_id = None
     
     if "_" in text:
         try:
-            plan_number = int(text.split("_")[1])
+            plan_id = int(text.split("_", 1)[1])
         except:
             pass
     elif " " in text:
         try:
-            plan_number = int(text.split()[1])
+            plan_id = int(text.split()[1])
         except:
             pass
     
-    if plan_number is None:
+    if plan_id is None:
         await message.answer(
-            "❌ Укажи номер плана для удаления\n\n"
-            "Формат: /delete_1\n"
-            "Посмотри номера в /status"
+            "❌ Укажи id плана для удаления\n\n"
+            "Формат: /delete_<id>\n"
+            "Посмотри команды в /status"
         )
         return
-    
-    # Получаем список планов для конвертации номера в ID
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT id FROM dca_plans WHERE user_id = ? AND deleted = 0 ORDER BY id",
-            (user_id,)
-        ) as cur:
-            plans = await cur.fetchall()
-    
-    if plan_number < 1 or plan_number > len(plans):
-        await message.answer(f"❌ План {plan_number} не найден")
-        return
-    
-    plan_id = plans[plan_number - 1][0]
     
     async with aiosqlite.connect(DB_PATH) as db:
         # Проверяем что план существует и принадлежит пользователю (только не удаленные)
@@ -3688,11 +3980,6 @@ async def cmd_delete(message: Message):
             if active_order_expires > now:
                 # Ордер еще действителен - помечаем план как удаленный (НЕ удаляем!)
                 # Это сохраняет информацию об активном ордере для предотвращения дубликатов
-                time_left = active_order_expires - now
-                hours = time_left // 3600
-                minutes = (time_left % 3600) // 60
-                time_text = f"{hours}ч {minutes}мин" if hours > 0 else f"{minutes}мин"
-                
                 # Помечаем план как удаленный (мягкое удаление)
                 await db.execute(
                     "UPDATE dca_plans SET deleted = 1, active = 0 WHERE id = ? AND user_id = ?",
@@ -3704,7 +3991,7 @@ async def cmd_delete(message: Message):
                     f"🗑 План {from_asset} удалён\n\n"
                     f"⚠️ У этого плана был активный ордер:\n"
                     f"🔗 Ордер: {format_order_link(active_order_id)}\n"
-                    f"⏰ Истекает через: {time_text}\n\n"
+                    f"⏰ До истечения: {format_order_deadline(active_order_expires, now)}\n\n"
                     f"💡 Ордер остаётся активным на FixedFloat.\n"
                     f"Завершите обмен или дождитесь истечения.\n\n"
                     f"❗️ Новый план с теми же параметрами (сеть + сумма + интервал + BTC адрес) можно создать только после истечения ордера.\n\n"
@@ -4306,16 +4593,12 @@ async def cmd_setdca(message: Message):
                 
                 # Проверяем есть ли активный ордер для этого плана
                 if order_id and order_expires and order_expires > now:
-                    time_left = order_expires - now
-                    hours = time_left // 3600
-                    minutes = (time_left % 3600) // 60
-                    time_text = f"{hours}ч {minutes}мин" if hours > 0 else f"{minutes}мин"
                     await message.answer(
                         f"❌ Такой план уже существует и у него есть активный ордер!\n\n"
                         f"📋 План: {get_network_label(from_asset) or from_asset}, {format_order_amount(amount, network_key=from_asset)}, раз в {format_interval(interval)}\n\n"
                         f"🔥 Активный ордер:\n"
                         f"🔗 Ордер: {format_order_link(order_id)}\n"
-                        f"⏰ Истекает через: {time_text}\n\n"
+                        f"⏰ До истечения: {format_order_deadline(order_expires, now)}\n\n"
                         f"💡 Дождись истечения ордера или используй другие параметры",
                         parse_mode="HTML",
                         disable_web_page_preview=True,
@@ -4675,9 +4958,10 @@ async def main():
         logger.info("🚀 AutoDCA Bot успешно запущен!")
         logger.info("=" * 60)
         
+        await notify_offline_startup_status()
+        
         # Запуск фонового планировщика DCA
         asyncio.create_task(dca_scheduler())
-        await notify_offline_startup_status()
         
         # Запуск мониторинга завершения ордеров
         asyncio.create_task(order_monitor())
