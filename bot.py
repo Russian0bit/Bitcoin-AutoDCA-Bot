@@ -41,7 +41,7 @@ try:
     from aiogram.client.default import DefaultBotProperties
     from aiogram.enums import ParseMode
     from aiogram.filters import Command
-    from aiogram.types import CallbackQuery, Message
+    from aiogram.types import BotCommand, CallbackQuery, Message
     from aiogram.fsm.storage.memory import MemoryStorage
 except ModuleNotFoundError as exc:
     raise RuntimeError("Missing dependency 'aiogram'. Install requirements: pip install -r requirements.txt") from exc
@@ -259,6 +259,12 @@ def format_balance(value: float) -> str:
     return f"{float(value):.2f}"
 
 
+def format_native_balance(value: float) -> str:
+    if value is None:
+        return "—"
+    return f"{float(value):.6f}"
+
+
 def short_address(addr: str) -> str:
     if not addr:
         return addr
@@ -343,10 +349,10 @@ def format_code_address(address: Any) -> str:
 
 
 NOTIFICATION_REASONS = {
-    "offline": "Бот был офлайн в момент исполнения",
-    "window_expired": "Окно исполнения было пропущено",
-    "insufficient": "Недостаточно средств на кошельке",
-    "order_expired": "Ордер истёк до оплаты",
+    "offline": "Бот был офлайн",
+    "window_expired": "Окно исполнения пропущено",
+    "insufficient": "Недостаточно средств",
+    "order_expired": "Ордер истёк",
 }
 
 
@@ -658,7 +664,15 @@ def build_order_payment_notification(
 
 
 def build_offline_startup_notification(items: list[dict]) -> str:
-    total_missed = sum(max(1, int(item.get("cycle_count", 1))) for item in items)
+    grouped: Dict[int, dict] = {}
+    for item in items:
+        key = int(item["plan_id"])
+        cycle_count = max(1, int(item.get("cycle_count", 1)))
+        existing = grouped.setdefault(key, {**item, "cycle_count": 0, "times": []})
+        existing["cycle_count"] += cycle_count
+        existing["times"].append(int(item["scheduled_time"]))
+
+    total_missed = sum(item["cycle_count"] for item in grouped.values())
     lines = [
         "🤖 Статус: Бот был офлайн",
         "",
@@ -669,12 +683,15 @@ def build_offline_startup_notification(items: list[dict]) -> str:
     ]
 
     action_lines = []
-    for item in items:
+    for item in grouped.values():
         network_label = get_network_label(item["network_key"]) or item["network_key"]
         reason_text = get_notification_reason(item["reason_code"])
+        start_time = min(item["times"])
+        end_time = max(item["times"])
         lines.extend([
             f"• План #{item['plan_number']} — {format_notification_amount(item['amount'])} USDT ({escape_html(network_label)})",
-            f"📅 Планировалось: {format_scheduled_time(item['scheduled_time'])}",
+            f"Пропущено: {item['cycle_count']} раз",
+            f"Период: {format_scheduled_time(start_time)} → {format_scheduled_time(end_time)}",
             f"Причина: {escape_html(reason_text)}",
             "",
         ])
@@ -1782,6 +1799,18 @@ dp.update.middleware(AccessControlMiddleware())
 DB_PATH = resolve_project_path(os.getenv("DATABASE_PATH", ""), DEFAULT_DB_PATH)
 
 
+async def setup_bot_commands() -> None:
+    await bot.set_my_commands([
+        BotCommand(command="start", description="старт"),
+        BotCommand(command="setdca", description="создать план"),
+        BotCommand(command="status", description="статус планов"),
+        BotCommand(command="limits", description="лимиты"),
+        BotCommand(command="walletstatus", description="баланс"),
+        BotCommand(command="history", description="история"),
+        BotCommand(command="help", description="помощь"),
+    ])
+
+
 def run_startup_checks() -> None:
     """Validate startup prerequisites before runtime initialization."""
     if not BOT_TOKEN:
@@ -2743,31 +2772,37 @@ async def cmd_start(message: Message):
     Команда /start - приветствие и список доступных команд.
     Первая команда, которую видит новый пользователь.
     """
-    user_id = message.from_user.id
-    username = message.from_user.username or "пользователь"
-    
     await message.answer(
-        f"👋 Привет, {username}!\n\n"
-        f"🤖 Я Bitcoin AutoDCA Bot, разработанный для автопокупки BTC по стратегии DCA\n\n"
-        f"📋 Доступные команды:\n\n"
-        f"🔧 Настройка:\n"
-        f"/setwallet — настроить кошелёк\n"
-        f"/setdca — создать DCA план\n\n"
-        f"⚙️ Команды:\n"
-        f"/status — статус планов\n"
-        f"/execute_<id>, /pause_<id>, /resume_<id>, /delete_<id> — управление планом\n"
-        f"/limits — сети и лимиты\n\n"
-        f"ℹ️ Информация:\n"
-        f"/help — подробная справка\n"
-        f"/walletstatus — баланс кошелька\n"
-        f"/history — история операций\n"
-        f"/ping — проверка бота\n\n"
-        f"💡 Начни с /setwallet для настройки кошелька!\n\n"
-        f"—\n\n"
-        f"Created by @Cryptobotan\n",
+        "👋 Привет!\n\n"
+        "Я AutoDCA Bot — бот для регулярной покупки BTC по стратегии DCA.\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🚀 Как начать\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "1. Настрой кошелёк:\n"
+        "   /setwallet\n\n"
+        "2. Создай DCA план:\n"
+        "   /setdca\n\n"
+        "Готово — дальше бот работает автоматически.\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📊 Основные команды\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "/status — активные планы\n"
+        "/execute_<id> — выполнить сейчас\n"
+        "/pause_<id> — остановить\n"
+        "/resume_<id> — продолжить\n"
+        "/delete_<id> — удалить\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "ℹ️ Дополнительно\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "/walletstatus — баланс\n"
+        "/history — история\n"
+        "/limits — лимиты сетей\n"
+        "/help — подробная справка\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Created by @Cryptobotan",
         parse_mode=None  # Plain text, no markdown
     )
-    logger.info(f"New user: {user_id} (@{username})")
+    logger.info(f"Start command from user: {message.from_user.id}")
 
 
 @dp.message(Command("help"))
@@ -4270,18 +4305,18 @@ async def fetch_network_status(network_key: str, wallet_address: str):
         balance_error = usdt_error or native_error
 
         if usdt_balance is None:
-            usdt_text = "— ⚠️ Нет данных по USDT"
+            usdt_text = "— ⚠️ Нет данных"
         elif usdt_balance < 1e-6:
-            usdt_text = f"{format_balance(usdt_balance)} ⚠️ Недостаточно USDT"
+            usdt_text = f"{format_balance(usdt_balance)} ⚠️ Недостаточно"
         else:
             usdt_text = format_balance(usdt_balance)
 
         if native_balance is None:
-            native_text = "— ⚠️ Нет данных RPC"
+            native_text = "— ⚠️ Нет данных"
         elif native_balance < 1e-8:
-            native_text = f"{format_balance(native_balance)} ⚠️ Недостаточно {gas_token} для оплаты газа"
+            native_text = f"{format_native_balance(native_balance)} ⚠️ Нет газа"
         else:
-            native_text = format_balance(native_balance)
+            native_text = format_native_balance(native_balance)
 
         result = {
             "name": config["name"],
@@ -4947,6 +4982,7 @@ async def main():
         
         # Load passwords from keyring into memory cache
         await load_passwords_at_startup()
+        await setup_bot_commands()
         
         # Обновление актуальных кодов сетей из FixedFloat
         await update_network_codes()
